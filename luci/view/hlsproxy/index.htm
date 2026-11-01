@@ -1,0 +1,25 @@
+<%+header%>
+<h2><a id="content" name="content">HLS Proxy - Настройка плейлиста</a></h2>
+<div class="cbi-map-descr">Вставьте ссылку на m3u8 плейлист от провайдера. Будет сгенерирована новая ссылка для плеера.</div>
+<div class="cbi-section"><fieldset class="cbi-section-node">
+    <div class="cbi-value">
+        <label class="cbi-value-title">Ссылка провайдера:</label>
+        <div class="cbi-value-field"><input type="text" class="cbi-input-text" id="prov_url" style="width: 100%;"></div>
+    </div>
+    <div class="cbi-value">
+        <label class="cbi-value-title"></label>
+        <div class="cbi-value-field"><input type="button" class="cbi-button cbi-button-apply" value="Сгенерировать ссылку" onclick="generateUrl()"></div>
+    </div>
+    <div class="cbi-value">
+        <label class="cbi-value-title">Ссылка для плеера:</label>
+        <div class="cbi-value-field"><input type="text" class="cbi-input-text" id="out_url" style="width: 100%; background-color: #f0f0f0;" readonly onclick="this.select();"></div>
+    </div>
+</fieldset></div>
+<script type="text/javascript">
+function generateUrl() {
+    var input = document.getElementById('prov_url').value.trim();
+    if (!input) return;
+    document.getElementById('out_url').value = "http://" + window.location.hostname + ":8888/playlist?url=" + encodeURIComponent(input);
+}
+</script>
+<%+footer%>
