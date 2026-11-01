@@ -1,25 +1,110 @@
+<%
+local uci = require "luci.model.uci".cursor()
+local http = require "luci.http"
+local sys = require "luci.sys"
+
+local fields = { "delay", "start_segs", "window", "concurrency" }
+local saved = false
+if http.formvalue("hp_save") then
+	for _, k in ipairs(fields) do
+		local v = tonumber(http.formvalue(k) or "")
+		if v and v >= 0 then uci:set("hlsproxy", "main", k, tostring(math.floor(v))) end
+	end
+	uci:set("hlsproxy", "main", "all_variants", http.formvalue("all_variants") and "1" or "0")
+	uci:commit("hlsproxy")
+	sys.call("/etc/init.d/hlsproxy restart >/dev/null 2>&1")
+	saved = true
+end
+
+local function get(k, d) return uci:get("hlsproxy", "main", k) or d end
+local port = get("port", "8888")
+-%>
 <%+header%>
-<h2><a id="content" name="content">HLS Proxy - Настройка плейлиста</a></h2>
-<div class="cbi-map-descr">Вставьте ссылку на m3u8 плейлист от провайдера. Будет сгенерирована новая ссылка для плеера.</div>
-<div class="cbi-section"><fieldset class="cbi-section-node">
-    <div class="cbi-value">
-        <label class="cbi-value-title">Ссылка провайдера:</label>
-        <div class="cbi-value-field"><input type="text" class="cbi-input-text" id="prov_url" style="width: 100%;"></div>
-    </div>
-    <div class="cbi-value">
-        <label class="cbi-value-title"></label>
-        <div class="cbi-value-field"><input type="button" class="cbi-button cbi-button-apply" value="Сгенерировать ссылку" onclick="generateUrl()"></div>
-    </div>
-    <div class="cbi-value">
-        <label class="cbi-value-title">Ссылка для плеера:</label>
-        <div class="cbi-value-field"><input type="text" class="cbi-input-text" id="out_url" style="width: 100%; background-color: #f0f0f0;" readonly onclick="this.select();"></div>
-    </div>
+<h2><a id="content" name="content">HLS Proxy (анти-фриз)</a></h2>
+<div class="cbi-map-descr">Кэширующий прокси с отложенным эфиром: сегменты заранее скачиваются в RAM роутера, плееру отдаётся эфир с отставанием, которое гасит провалы провайдера.</div>
+<% if saved then %><div class="alert-message success">Сохранено, служба перезапущена.</div><% end %>
+
+<div class="cbi-section"><h3>Ссылка для плеера</h3><fieldset class="cbi-section-node">
+	<div class="cbi-value">
+		<label class="cbi-value-title">Ссылка провайдера</label>
+		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="prov_url" style="width:100%" placeholder="http://…/playlist.m3u или …/index.m3u8"></div>
+	</div>
+	<div class="cbi-value">
+		<label class="cbi-value-title"></label>
+		<div class="cbi-value-field"><input type="button" class="cbi-button cbi-button-apply" value="Сгенерировать" onclick="hpGen()"></div>
+	</div>
+	<div class="cbi-value">
+		<label class="cbi-value-title">Для OTT Navigator</label>
+		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="out_url" style="width:100%" readonly onclick="this.select()"></div>
+	</div>
 </fieldset></div>
+
+<form method="post" action="<%=REQUEST_URI%>">
+<input type="hidden" name="token" value="<%=token%>">
+<div class="cbi-section"><h3>Настройки</h3><fieldset class="cbi-section-node">
+	<div class="cbi-value"><label class="cbi-value-title">Отставание, сек</label>
+		<div class="cbi-value-field"><input type="number" min="0" name="delay" value="<%=get('delay','60')%>" class="cbi-input-text">
+		<div class="cbi-value-description">Запас против провалов. Ограничен окном плейлиста провайдера: фактическое значение видно в колонке «Отставание».</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Сегментов на старте</label>
+		<div class="cbi-value-field"><input type="number" min="1" name="start_segs" value="<%=get('start_segs','3')%>" class="cbi-input-text"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Окно плейлиста плеера</label>
+		<div class="cbi-value-field"><input type="number" min="3" name="window" value="<%=get('window','8')%>" class="cbi-input-text"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Параллельных загрузок</label>
+		<div class="cbi-value-field"><input type="number" min="1" max="6" name="concurrency" value="<%=get('concurrency','2')%>" class="cbi-input-text"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Все качества</label>
+		<div class="cbi-value-field"><input type="checkbox" name="all_variants" value="1" <%=(get('all_variants','0')=='1') and 'checked' or ''%>>
+		<div class="cbi-value-description">Выключено — из master-плейлиста остаётся только лучшее качество (переключение качества = холодный старт = фриз).</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"></label>
+		<div class="cbi-value-field"><input type="submit" name="hp_save" class="cbi-button cbi-button-save" value="Сохранить и перезапустить"></div></div>
+</fieldset></div>
+</form>
+
+<div class="cbi-section"><h3>Состояние каналов <small id="hp_ver"></small></h3>
+<table class="table" id="hp_tbl">
+	<tr class="tr table-titles">
+		<th class="th">Канал</th><th class="th">Отставание</th><th class="th">Готовый запас</th>
+		<th class="th">Скорость</th><th class="th">× реалтайм</th><th class="th">Исчерпаний запаса</th>
+		<th class="th">Ретраи / потеряно</th><th class="th">Кэш</th><th class="th">Последняя ошибка</th>
+	</tr>
+</table>
+<div class="cbi-value-description">«Готовый запас» — сколько секунд эфира уже лежит в RAM впереди плеера. «× реалтайм» &lt; 1.2 — провайдер едва успевает отдавать поток, никакой запас долго не продержится.
+«Исчерпаний запаса» растёт, только если провал провайдера был длиннее запаса; если фризы на ТВ есть, а этот счётчик 0 — причина не в доставке (поток провайдера, Wi-Fi до ТВ, декодер).</div>
+</div>
+
 <script type="text/javascript">
-function generateUrl() {
-    var input = document.getElementById('prov_url').value.trim();
-    if (!input) return;
-    document.getElementById('out_url').value = "http://" + window.location.hostname + ":8888/playlist?url=" + encodeURIComponent(input);
+var HP_BASE = "http://" + window.location.hostname + ":<%=port%>";
+function hpGen() {
+	var v = document.getElementById('prov_url').value.trim();
+	if (v) document.getElementById('out_url').value = HP_BASE + "/playlist?url=" + encodeURIComponent(v);
 }
+function hpCell(t) { var td = document.createElement('td'); td.className = 'td'; td.textContent = t; return td; }
+function hpPoll() {
+	var x = new XMLHttpRequest();
+	x.open('GET', HP_BASE + '/status', true);
+	x.timeout = 3000;
+	x.onload = function() {
+		var tbl = document.getElementById('hp_tbl'), d;
+		try { d = JSON.parse(x.responseText); } catch (e) { return; }
+		document.getElementById('hp_ver').textContent = 'v' + d.version;
+		while (tbl.rows.length > 1) tbl.deleteRow(1);
+		if (!d.channels.length) {
+			var tr = tbl.insertRow(-1); tr.className = 'tr';
+			var td = hpCell('Нет активных каналов'); td.colSpan = 9; tr.appendChild(td);
+		}
+		d.channels.forEach(function(c) {
+			var tr = tbl.insertRow(-1); tr.className = 'tr';
+			[c.source + (c.started ? '' : ' (старт…)'),
+			 c.delay_s + ' с', c.ready_ahead_s + ' с',
+			 c.speed_mbps + ' Мбит/с', c.realtime_x,
+			 c.stalls + (c.stalls ? ' (' + c.stall_s + ' с)' : ''),
+			 c.retries + ' / ' + c.skipped,
+			 c.cache_mb + ' МБ',
+			 c.last_error ? c.last_error + ' (' + c.last_error_ago_s + ' с назад)' : '—'
+			].forEach(function(t) { tr.appendChild(hpCell(String(t))); });
+		});
+	};
+	x.send();
+}
+hpPoll(); setInterval(hpPoll, 2000);
 </script>
 <%+footer%>
