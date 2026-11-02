@@ -231,3 +231,27 @@ func parseMedia(body string, base *url.URL) *mediaPlaylist {
 	}
 	return p
 }
+
+// channelNames maps absolute stream URL -> channel title from "#EXTINF:...,Title".
+func channelNames(body string, base *url.URL) map[string]string {
+	out := map[string]string{}
+	name := ""
+	for _, l := range lines(body) {
+		t := strings.TrimSpace(l)
+		switch {
+		case t == "":
+		case strings.HasPrefix(t, "#EXTINF"):
+			name = ""
+			if i := strings.LastIndex(t, ","); i >= 0 {
+				name = strings.TrimSpace(t[i+1:])
+			}
+		case strings.HasPrefix(t, "#"):
+		default:
+			if name != "" {
+				out[resolveURL(base, t)] = name
+			}
+			name = ""
+		}
+	}
+	return out
+}

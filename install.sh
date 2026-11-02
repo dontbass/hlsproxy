@@ -20,7 +20,17 @@ mv /tmp/hlsproxy.bin /usr/bin/hlsproxy
 
 dl init.d/hlsproxy /etc/init.d/hlsproxy
 chmod +x /etc/init.d/hlsproxy
-[ -f /etc/config/hlsproxy ] || dl files/hlsproxy.config /etc/config/hlsproxy
+if [ -f /etc/config/hlsproxy ]; then
+	# добавить новые опции, не трогая уже заданные
+	for kv in mode=auto max_delay=180 max_pause=40; do
+		k=${kv%%=*}; v=${kv#*=}
+		[ -n "$(uci -q get hlsproxy.main.$k)" ] || uci set hlsproxy.main.$k="$v"
+	done
+	uci commit hlsproxy
+else
+	dl files/hlsproxy.config /etc/config/hlsproxy
+fi
+mkdir -p /etc/hlsproxy
 
 mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/view/hlsproxy
 dl luci/controller/hlsproxy.lua /usr/lib/lua/luci/controller/hlsproxy.lua
@@ -29,4 +39,5 @@ rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache 2>/dev/null || true
 
 /etc/init.d/hlsproxy enable
 /etc/init.d/hlsproxy restart
-echo "HLS Proxy $(/usr/bin/hlsproxy -version) установлен и запущен. Статус: http://$(uci -q get network.lan.ipaddr || echo роутер):$(uci -q get hlsproxy.main.port || echo 8888)/status"
+IP=$(uci -q get network.lan.ipaddr | cut -d/ -f1); PORT=$(uci -q get hlsproxy.main.port || echo 8888)
+echo "HLS Proxy $(/usr/bin/hlsproxy -version) установлен. Панель: http://${IP:-роутер}:$PORT/ui  (или LuCI → Службы → HLS Proxy)"

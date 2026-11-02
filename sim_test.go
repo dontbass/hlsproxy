@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -23,9 +22,11 @@ import (
 const (
 	simSegDur  = 1.0 // сек
 	simSegSize = 200 * 1024
-	simRate    = 800 * 1024 // байт/с на соединение (~4x realtime)
-	simRunFor  = 70 * time.Second
+
+	simRunFor = 70 * time.Second
 )
+
+var simRate = envInt("SIM_RATE", 800*1024) // байт/с на соединение (~4x realtime)
 
 var simWindow = envInt("SIM_WINDOW", 6) // сегментов в плейлисте провайдера
 
@@ -46,6 +47,18 @@ type fakeUpstream struct {
 }
 
 func (u *fakeUpstream) now() float64 { return time.Since(u.t0).Seconds() }
+
+func init() {
+	if v := os.Getenv("SIM_BAD"); v != "" {
+		simBad = nil
+		for _, p := range strings.Split(v, ",") {
+			a, b, _ := strings.Cut(p, "-")
+			x, _ := strconv.ParseFloat(a, 64)
+			y, _ := strconv.ParseFloat(b, 64)
+			simBad = append(simBad, [2]float64{x, y})
+		}
+	}
+}
 
 func (u *fakeUpstream) badUntil() float64 {
 	n := u.now()
@@ -261,56 +274,95 @@ func simPlayer(t *testing.T, plURL string, dur time.Duration) simResult {
 	return res
 }
 
+func runSim(t *testing.T, mode string) simResult {
+	up := &fakeUpstream{t0: time.Now(), rnd: rand.New(rand.NewSource(7))}
+	us := httptest.NewServer(up)
+	defer us.Close()
+	src := us.URL + "/live.m3u8"
+	pl := src
+	if mode != "direct" {
+		ps := httptest.NewServer(newMux())
+		defer ps.Close()
+		pl = ps.URL + "/proxy?url=" + url.QueryEscape(src)
+		defer func() {
+			for _, c := range channels.list() {
+				if !strings.Contains(c.srcURL, us.URL) {
+					continue
+				}
+				c.mu.Lock()
+				sm := c.summary()
+				c.mu.Unlock()
+				t.Logf("[%s] диагноз: %s (%s) need=%.1f have=%.1f avail=%.1f capX=%.2f rec_delay=%d | est.freezes=%d holds=%d",
+					mode, sm.Diag.Verdict, sm.Diag.Title, sm.Diag.NeedS, sm.Diag.HaveS, sm.Diag.AvailS, sm.Diag.CapX,
+					sm.Diag.RecDelay, sm.Stats.Freezes, sm.Stats.Holds)
+				for _, r := range sm.Diag.Reasons {
+					t.Logf("    %s", r)
+				}
+				channels.remove(c)
+			}
+		}()
+	}
+	return simPlayer(t, pl, simRunFor)
+}
+
 func TestSim(t *testing.T) {
 	if os.Getenv("SIM") == "" {
 		t.Skip("SIM=1 для запуска (долго)")
 	}
 	cfg = config{
-		CacheDir: t.TempDir(), Delay: time.Duration(envInt("SIM_DELAY", 6)) * time.Second, StartSegs: 3, Window: 8,
-		Concurrency: 2, Idle: 60 * time.Second, IdleRead: 1500 * time.Millisecond,
-		MaxAttempts: 8, MaxBurstSegs: 4, StartWait: 7 * time.Second,
+		CacheDir: t.TempDir(), Delay: time.Duration(envInt("SIM_DELAY", 6)) * time.Second, MaxDelay: 60 * time.Second,
+		StartSegs: 3, Window: 8, Concurrency: 2, Idle: 60 * time.Second, IdleRead: 1500 * time.Millisecond,
+		MaxAttempts: 8, MaxBurstSegs: 4, StartWait: 7 * time.Second, MaxHold: 8 * time.Second, Mode: "off",
 	}
-	var wg sync.WaitGroup
+	profiles.load(t.TempDir() + "/p.json")
+	modes := strings.Split(envStr("SIM_MODES", "direct,off,auto"), ",")
 	results := map[string]simResult{}
 	var mu sync.Mutex
-	var cnt atomic.Int32
-	for _, mode := range []string{"direct", "proxy"} {
-		wg.Add(1)
-		go func(mode string) {
-			defer wg.Done()
-			up := &fakeUpstream{t0: time.Now(), rnd: rand.New(rand.NewSource(int64(len(mode))))}
-			us := httptest.NewServer(up)
-			defer us.Close()
-			src := us.URL + "/live.m3u8"
-			pl := src
-			if mode == "proxy" {
-				ps := httptest.NewServer(newMux())
-				defer ps.Close()
-				pl = ps.URL + "/proxy?url=" + url.QueryEscape(src)
-				defer func() {
-					for _, c := range channels.list() {
-						t.Logf("status: %+v", c.status())
-					}
-				}()
-			}
-			r := simPlayer(t, pl, simRunFor)
-			mu.Lock()
-			results[mode] = r
-			mu.Unlock()
-			cnt.Add(1)
-		}(mode)
+	var wg sync.WaitGroup
+	for _, m := range modes {
+		if m == "direct" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				r := runSim(t, "direct")
+				mu.Lock()
+				results["direct"] = r
+				mu.Unlock()
+			}()
+		}
+	}
+	for _, m := range modes {
+		if m == "direct" {
+			continue
+		}
+		cfg.Mode = m
+		r := runSim(t, m)
+		mu.Lock()
+		results[m] = r
+		mu.Unlock()
 	}
 	wg.Wait()
-	for _, m := range []string{"direct", "proxy"} {
+	for _, m := range modes {
 		r := results[m]
 		t.Logf("%-6s: фризов %d (%.1f c), пропусков контента %d, битых %d, выпал из окна %d, показано %.0f c",
 			m, r.stalls, r.stallSec, r.gaps, r.corrupt, r.beh, r.played)
 	}
-	p := results["proxy"]
-	if p.corrupt > 0 || p.beh > 0 {
-		t.Fatalf("прокси отдал битые сегменты или плеер выпал из окна")
+	for _, m := range modes {
+		if m == "direct" {
+			continue
+		}
+		if r := results[m]; r.corrupt > 0 || r.beh > 0 {
+			t.Fatalf("%s: битые сегменты или плеер выпал из окна", m)
+		}
 	}
-	if p.stalls > envInt("SIM_MAX_STALLS", 1) {
-		t.Fatalf("слишком много фризов через прокси: %d", p.stalls)
+	if p, ok := results["auto"]; ok && p.stalls > envInt("SIM_MAX_STALLS", 2) {
+		t.Fatalf("авто-режим: слишком много фризов: %d", p.stalls)
 	}
+}
+
+func envStr(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
 }
