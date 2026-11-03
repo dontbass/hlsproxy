@@ -20,7 +20,9 @@ type profile struct {
 	Verdict     string  `json:"verdict"`
 	Sessions    int     `json:"sessions"`
 	Manual      bool    `json:"manual,omitempty"`
-	Subs        *bool   `json:"subs,omitempty"` // subtitles on/off for this channel (nil = default)
+	Subs        *bool   `json:"subs,omitempty"`        // subtitles on/off for this channel (nil = default)
+	SpeechLang  string  `json:"speech_lang,omitempty"` // language of speech detected by Whisper
+	LangChecked int64   `json:"lang_checked,omitempty"`
 	Updated     string  `json:"updated"`
 }
 

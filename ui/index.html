@@ -535,16 +535,20 @@ function subsCard(d, live) {
     return card;
   }
   const row = h("div", { class: "btnrow" });
-  const st = so.on ? (so.last_error && so.last_error_ago_s < 60 ? statusBadge("warning", "ошибка: " + so.last_error) : statusBadge("good", "включены")) : statusBadge("info", "выключены для канала");
-  row.append(st);
+  const lv = so.detecting ? "info" : so.on ? (so.last_error && so.last_error_ago_s < 60 ? "warning" : "good") : "info";
+  row.append(statusBadge(lv, (so.on ? "Включены · " : so.detecting ? "" : "Выключены · ") + (so.state || "")));
+  if (so.on && so.last_error && so.last_error_ago_s < 60) row.append(statusBadge("warning", "ошибка: " + so.last_error));
   if (live) {
-    const btn = h("button", { class: "btn" + (so.on ? "" : " primary"), text: so.on ? "Выключить" : "Включить для канала", onclick: async () => {
-      btn.disabled = true;
-      const r = await fetch("api/channel/" + d.id + "/subs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: !so.on }) });
-      if (!r.ok) alert(await r.text());
-      btn.disabled = false; refresh();
-    }});
-    row.append(btn);
+    const cur = so.manual ? (so.on ? "on" : "off") : "auto";
+    for (const [m, label] of [["auto", "Авто (по языку речи)"], ["on", "Всегда"], ["off", "Никогда"]]) {
+      const b = h("button", { class: "btn" + (cur === m ? " primary" : ""), text: label, onclick: async () => {
+        b.disabled = true;
+        const r = await fetch("api/channel/" + d.id + "/subs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: m }) });
+        if (!r.ok) alert(await r.text());
+        b.disabled = false; refresh();
+      }});
+      row.append(b);
+    }
   }
   card.append(row);
   if (so.on || so.chunks) {

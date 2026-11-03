@@ -30,7 +30,7 @@ sync_firewall() {
 
 start_service() {
 	config_load hlsproxy
-	local enabled port mode delay max_delay max_pause start_segs window concurrency all_variants ua log_dir access_key ext_ui subs subs_default subs_lang subs_proxy asr_key llm_key
+	local enabled port mode delay max_delay max_pause start_segs window concurrency all_variants ua log_dir access_key ext_ui subs subs_lang subs_proxy asr_key llm_key
 	config_get_bool enabled main enabled 1
 	[ "$enabled" = "1" ] || return 0
 	config_get port main port 8888
@@ -46,8 +46,8 @@ start_service() {
 	config_get log_dir main log_dir /tmp/hlsproxy-log
 	config_get access_key main access_key ""
 	config_get_bool ext_ui main ext_ui 0
-	config_get_bool subs main subs 0
-	config_get_bool subs_default main subs_default 0
+	config_get subs main subs 0
+	[ "$subs" = "1" ] && subs=auto
 	config_get subs_lang main subs_lang ru
 	config_get subs_proxy main subs_proxy ""
 	config_get asr_key main asr_key ""
@@ -63,9 +63,8 @@ start_service() {
 	[ -n "$ua" ] && procd_append_param command -ua "$ua"
 	[ -n "$access_key" ] && procd_append_param command -access-key "$access_key"
 	[ "$ext_ui" = "1" ] && procd_append_param command -ext-ui
-	if [ "$subs" = "1" ]; then
-		procd_append_param command -subs -subs-lang "$subs_lang"
-		[ "$subs_default" = "1" ] && procd_append_param command -subs-default
+	if [ "$subs" = "auto" ] || [ "$subs" = "all" ] || [ "$subs" = "manual" ]; then
+		procd_append_param command -subs -subs-mode "$subs" -subs-lang "$subs_lang"
 		[ -n "$subs_proxy" ] && procd_append_param command -subs-proxy "$subs_proxy"
 		# keys via environment: not visible in ps
 		procd_set_param env HLSPROXY_ASR_KEY="$asr_key" HLSPROXY_LLM_KEY="$llm_key"

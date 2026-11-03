@@ -374,8 +374,8 @@ func (r *registry) create(src, finalURL, ua string, p *mediaPlaylist, external b
 	if prof != nil && cfg.Mode != "off" {
 		from = "из профиля канала"
 	}
-	if subsWanted(id) {
-		c.setSubs(true)
+	if pl := subsPlan(id); pl.on || pl.detect {
+		c.startSubs(pl)
 	}
 	c.addEvent("info", fmt.Sprintf("старт: сегмент %.1f с, окно провайдера %.0f с, delay %.0f с и %d потока (%s)",
 		c.targetDur, c.provWin, c.delay, c.conc, from))

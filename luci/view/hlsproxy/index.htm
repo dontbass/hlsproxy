@@ -36,8 +36,8 @@ uci:foreach("hlsproxy", "playlist", function(sec)
 end)
 local subs_msg = nil
 if http.formvalue("hp_subs") then
-	uci:set("hlsproxy", "main", "subs", http.formvalue("subs") and "1" or "0")
-	uci:set("hlsproxy", "main", "subs_default", http.formvalue("subs_default") and "1" or "0")
+	local sm = http.formvalue("subs")
+	if sm == "0" or sm == "auto" or sm == "all" or sm == "manual" then uci:set("hlsproxy", "main", "subs", sm) end
 	local lang = http.formvalue("subs_lang")
 	if lang == "ru" or lang == "en" or lang == "uk" then uci:set("hlsproxy", "main", "subs_lang", lang) end
 	local px = (http.formvalue("subs_proxy") or ""):gsub("%s", "")
@@ -52,10 +52,14 @@ if http.formvalue("hp_subs") then
 	subs_msg = "Сохранено, служба перезапущена."
 end
 if http.formvalue("hp_ffmpeg") then
-	sys.call("(if command -v apk >/dev/null; then apk update && apk add ffmpeg; else opkg update && opkg install ffmpeg; fi) >/tmp/hlsproxy-ffmpeg.log 2>&1 &")
-	subs_msg = "Установка ffmpeg запущена в фоне (1–3 мин). Обновите страницу позже."
+	sys.call("(echo \"$(date) старт\"; df -h /overlay 2>/dev/null; if command -v apk >/dev/null 2>&1; then apk update && apk add ffmpeg; else opkg update && opkg install ffmpeg; fi; echo \"код выхода: $?\") >/tmp/hlsproxy-ffmpeg.log 2>&1 &")
+	subs_msg = "Установка ffmpeg запущена в фоне. Обновите страницу через минуту — ниже будет лог."
 end
 local has_ffmpeg = sys.call("command -v ffmpeg >/dev/null 2>&1") == 0
+local ff_log = nil
+do local f = io.open("/tmp/hlsproxy-ffmpeg.log"); if f then ff_log = f:read("*a"); f:close(); if #ff_log > 3000 then ff_log = ff_log:sub(-3000) end end end
+local sm_cur = uci:get("hlsproxy", "main", "subs") or "0"
+if sm_cur == "1" then sm_cur = "auto" end
 local function masked(k) local v = uci:get("hlsproxy", "main", k) or ""; if v == "" then return "не задан" end; return "задан: …" .. v:sub(-4) end
 if http.formvalue("hp_ext") then
 	uci:set("hlsproxy", "main", "wan_access", http.formvalue("wan_access") and "1" or "0")
@@ -159,14 +163,18 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 <div class="cbi-section"><h3>Субтитры (авто)</h3><fieldset class="cbi-section-node">
 	<div class="cbi-map-descr">Речь распознаётся Whisper (Groq, whisper-large-v3-turbo, ≈ $0,04 за час эфира) и переводится DeepSeek. Работает только пока канал смотрят и только на каналах, где субтитры включены в панели. Дорожка «Русский (авто)» появляется в плеере при открытии канала.</div>
 	<% if subs_msg then %><div class="alert-message"><%=pcdata(subs_msg)%></div><% end %>
-	<div class="cbi-value"><label class="cbi-value-title">ffmpeg на роутере</label>
-		<div class="cbi-value-field"><% if has_ffmpeg then %><b>установлен</b><% else %><b>не установлен</b> — нужен для извлечения звука
-		<input type="submit" name="hp_ffmpeg" class="cbi-button cbi-button-action" value="Установить ffmpeg" style="margin-left:8px"><% end %></div></div>
-	<div class="cbi-value"><label class="cbi-value-title">Включить субтитры</label>
-		<div class="cbi-value-field"><input type="checkbox" name="subs" value="1" <%=(get('subs','0')=='1') and 'checked' or ''%>></div></div>
-	<div class="cbi-value"><label class="cbi-value-title">Для всех каналов</label>
-		<div class="cbi-value-field"><input type="checkbox" name="subs_default" value="1" <%=(get('subs_default','0')=='1') and 'checked' or ''%>>
-		<div class="cbi-value-description">Выключено — субтитры включаются кнопкой на нужном канале в панели (рекомендуется: платите только за нужные каналы).</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Субтитры</label>
+		<div class="cbi-value-field"><select name="subs" class="cbi-input-select">
+			<option value="0" <%=(sm_cur=='0') and 'selected' or ''%>>Выключены</option>
+			<option value="auto" <%=(sm_cur=='auto') and 'selected' or ''%>>Авто: только где речь не на языке субтитров</option>
+			<option value="manual" <%=(sm_cur=='manual') and 'selected' or ''%>>Только на каналах, где включены кнопкой</option>
+			<option value="all" <%=(sm_cur=='all') and 'selected' or ''%>>На всех каналах</option>
+		</select>
+		<div class="cbi-value-description">Авто: при первом открытии канала один фрагмент (~24 с, ≈ $0,0003) уходит в Whisper, по языку речи субтитры включаются или нет. Решение запоминается для канала и перепроверяется раз в неделю. В панели на канале можно закрепить «Всегда» или «Никогда».</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">ffmpeg</label>
+		<div class="cbi-value-field"><% if has_ffmpeg then %><b>установлен</b><% else %>не нужен: звук AAC, MPEG audio и AC-3 прокси извлекает сам. Нужен только для редких E-AC-3/LATM.
+		<input type="submit" name="hp_ffmpeg" class="cbi-button cbi-button-action" value="Установить ffmpeg" style="margin-left:8px"><% end %>
+		<% if ff_log and ff_log ~= "" then %><pre style="max-height:180px;overflow:auto;font-size:11px;margin-top:6px;white-space:pre-wrap"><%=pcdata(ff_log)%></pre><% end %></div></div>
 	<div class="cbi-value"><label class="cbi-value-title">Язык субтитров</label>
 		<div class="cbi-value-field"><select name="subs_lang" class="cbi-input-select">
 			<option value="ru" <%=(get('subs_lang','ru')=='ru') and 'selected' or ''%>>Русский (перевод)</option>

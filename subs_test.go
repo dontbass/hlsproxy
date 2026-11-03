@@ -26,14 +26,15 @@ func TestSubs(t *testing.T) {
 			http.Error(w, "no auth", 401)
 			return
 		}
-		f, _, err := r.FormFile("file")
+		f, hdr, err := r.FormFile("file")
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
 		b, _ := io.ReadAll(f)
-		if len(b) < 4 || string(b[:4]) != "fLaC" {
-			http.Error(w, "not flac", 400)
+		// demo segments carry AAC: expect an M4A built without ffmpeg
+		if !strings.HasSuffix(hdr.Filename, ".m4a") || len(b) < 12 || string(b[4:8]) != "ftyp" || !strings.Contains(string(b), "mp4a") {
+			http.Error(w, "unexpected audio "+hdr.Filename, 400)
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"language": "english", "segments": []map[string]any{
@@ -67,7 +68,7 @@ func TestSubs(t *testing.T) {
 		CacheDir: t.TempDir(), Delay: 8 * time.Second, MaxDelay: 60 * time.Second,
 		StartSegs: 3, Window: 8, Concurrency: 2, Idle: 60 * time.Second, IdleRead: 3 * time.Second,
 		MaxAttempts: 8, MaxBurstSegs: 4, StartWait: 7 * time.Second, MaxHold: 0, Mode: "off",
-		Subs: subsConfig{Enabled: true, Default: true, Lang: "ru", ASRURL: asr.URL, ASRModel: "whisper-large-v3-turbo",
+		Subs: subsConfig{Enabled: true, Mode: "auto", Lang: "ru", ASRURL: asr.URL, ASRModel: "whisper-large-v3-turbo",
 			LLMURL: llm.URL, LLMModel: "deepseek-chat", ChunkSec: 6},
 	}
 	profiles = &profileStore{m: map[string]*profile{}}
@@ -150,6 +151,21 @@ func TestSubs(t *testing.T) {
 	c.mu.Lock()
 	so := c.subsSummary()
 	c.mu.Unlock()
+	if !so.On || so.Detecting || !strings.Contains(so.State, "английская") {
+		t.Fatalf("auto mode should detect English and switch on: %+v", so)
+	}
+	if p := profiles.get(id); p == nil || p.SpeechLang != "english" {
+		t.Fatalf("speech language not remembered: %+v", p)
+	}
+	// a channel remembered as Russian: no subtitle rendition, nothing runs
+	profiles.put("ruchan", &profile{SpeechLang: "russian", LangChecked: time.Now().Unix()})
+	if pl := subsPlan("ruchan"); pl.advertise || pl.on || pl.detect {
+		t.Fatalf("russian channel must not get subtitles: %+v", pl)
+	}
+	if pl := subsPlan("unknown"); !pl.advertise || !pl.detect || pl.on {
+		t.Fatalf("unknown channel: detect first: %+v", pl)
+	}
+	t.Logf("subs state=%q", so.State)
 	t.Logf("subs summary: chunks=%d lang=%s ahead=%.1fs cost=$%.4f recent=%d err=%q", so.Chunks, so.Lang, so.AheadSec, so.CostUSD, len(so.Recent), so.LastErr)
 	close(stop)
 	for _, c := range channels.list() {

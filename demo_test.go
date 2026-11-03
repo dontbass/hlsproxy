@@ -32,7 +32,7 @@ func TestDemo(t *testing.T) {
 		llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"choices":[{"message":{"content":"{\"lines\":[\"С возвращением в вечерние новости.\",\"Сегодня — о погоде по всей стране.\",\"Оставайтесь с нами после рекламы.\"]}"}}],"usage":{"prompt_tokens":120,"completion_tokens":60}}`))
 		}))
-		cfg.Subs = subsConfig{Enabled: true, Default: true, Lang: "ru", ASRURL: asr.URL, ASRModel: "whisper-large-v3-turbo", LLMURL: llm.URL, LLMModel: "deepseek-chat", ChunkSec: 20}
+		cfg.Subs = subsConfig{Enabled: true, Mode: "auto", Lang: "ru", ASRURL: asr.URL, ASRModel: "whisper-large-v3-turbo", LLMURL: llm.URL, LLMModel: "deepseek-chat", ChunkSec: 20}
 		initSubs()
 		cfg.Subs.ASRKey, cfg.Subs.LLMKey = "k", "k"
 	}

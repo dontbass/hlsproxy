@@ -42,7 +42,7 @@ type subsConfig struct {
 	Lang     string // target language code (ru)
 	Proxy    string // http(s)/socks5 proxy for API calls (e.g. via own VPS)
 	ChunkSec float64
-	Default  bool // subtitles on for channels without explicit choice
+	Mode     string // auto: only where speech is not in Lang | all | manual
 }
 
 type cue struct {
@@ -55,6 +55,14 @@ type cue struct {
 
 type subsState struct {
 	on        bool
+	detect    bool // auto mode: sampling speech language
+	manual    bool // user pinned on/off for this channel
+	why       string
+	samples   []string
+	tries     int
+	streak    int // consecutive chunks already in the target language
+	nextTry   time.Time
+	recheckAt time.Time
 	next      int64 // next segment id to transcribe
 	ready     map[int64]bool
 	cues      []cue
@@ -104,21 +112,76 @@ func subsAvailable() (bool, string) {
 	case s.LLMKey == "" && s.Lang != "en":
 		return false, "не задан ключ перевода (DeepSeek)"
 	}
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		return false, "на роутере нет ffmpeg: opkg update && opkg install ffmpeg"
-	}
 	return true, ""
 }
 
-// subsWanted: per-channel choice from the profile, else the default.
-func subsWanted(id string) bool {
+type subsPlanT struct {
+	advertise, on, detect, manual bool
+	why                           string
+}
+
+// subsPlan: what to do with subtitles for a channel when it opens.
+func subsPlan(id string) subsPlanT {
 	if ok, _ := subsAvailable(); !ok {
-		return false
+		return subsPlanT{}
 	}
-	if p := profiles.get(id); p != nil && p.Subs != nil {
-		return *p.Subs
+	p := profiles.get(id)
+	if p != nil && p.Subs != nil {
+		if *p.Subs {
+			return subsPlanT{advertise: true, on: true, manual: true, why: "включены вручную"}
+		}
+		return subsPlanT{manual: true, why: "выключены вручную"}
 	}
-	return cfg.Subs.Default
+	switch cfg.Subs.Mode {
+	case "all":
+		return subsPlanT{advertise: true, on: true, why: "для всех каналов"}
+	case "manual":
+		return subsPlanT{why: "включаются кнопкой на канале"}
+	}
+	// auto: by detected speech language (re-checked weekly)
+	if p != nil && p.SpeechLang != "" && time.Now().Unix()-p.LangChecked < 7*86400 {
+		if langIs(p.SpeechLang, cfg.Subs.Lang) {
+			return subsPlanT{why: "авто: речь " + langRu(p.SpeechLang) + " — не нужны"}
+		}
+		return subsPlanT{advertise: true, on: true, why: "авто: речь " + langRu(p.SpeechLang)}
+	}
+	return subsPlanT{advertise: true, detect: true, why: "авто: определяю язык речи…"}
+}
+
+// subsWanted: advertise a subtitle rendition in the master playlist.
+func subsWanted(id string) bool { return subsPlan(id).advertise }
+
+func langRu(l string) string {
+	m := map[string]string{"english": "английская", "en": "английская", "russian": "русская", "ru": "русская",
+		"ukrainian": "украинская", "uk": "украинская", "german": "немецкая", "french": "французская", "spanish": "испанская",
+		"italian": "итальянская", "turkish": "турецкая", "polish": "польская", "chinese": "китайская", "japanese": "японская",
+		"korean": "корейская", "arabic": "арабская", "portuguese": "португальская"}
+	if v, ok := m[strings.ToLower(l)]; ok {
+		return v
+	}
+	return l
+}
+
+func majority(xs []string) string {
+	cnt := map[string]int{}
+	best, bn := "", 0
+	for _, x := range xs {
+		x = strings.ToLower(x)
+		cnt[x]++
+		if cnt[x] > bn {
+			best, bn = x, cnt[x]
+		}
+	}
+	return best
+}
+
+func (c *channel) rememberLang(lang string) {
+	p := profiles.get(c.id)
+	if p == nil {
+		p = &profile{Name: c.name, Source: shortURL(c.srcURL)}
+	}
+	p.SpeechLang, p.LangChecked = strings.ToLower(lang), time.Now().Unix()
+	profiles.put(c.id, p)
 }
 
 // ---------------------------------------------------------------- worker
@@ -133,7 +196,10 @@ func (c *channel) subsLoop() {
 		case <-t.C:
 		}
 		c.mu.Lock()
-		if c.subs == nil || !c.subs.on || c.subs.busy {
+		if st := c.subs; st != nil && !st.on && !st.detect && !st.manual && !st.recheckAt.IsZero() && time.Now().After(st.recheckAt) {
+			st.detect, st.recheckAt = true, time.Time{} // second opinion after 10 min
+		}
+		if c.subs == nil || !(c.subs.on || c.subs.detect) || c.subs.busy || time.Now().Before(c.subs.nextTry) {
 			c.mu.Unlock()
 			continue
 		}
@@ -217,27 +283,55 @@ func (c *channel) subsProcess(batch []*seg) error {
 	if base < 0 {
 		return errors.New("нет таймстемпов в сегменте")
 	}
-	var files []io.Reader
-	for _, s := range batch {
-		f, err := os.Open(s.path)
-		if err != nil {
-			return err
+	open := func() (io.Reader, func(), error) {
+		var rs []io.Reader
+		var fs []*os.File
+		for _, s := range batch {
+			f, err := os.Open(s.path)
+			if err != nil {
+				for _, x := range fs {
+					x.Close()
+				}
+				return nil, nil, err
+			}
+			fs = append(fs, f)
+			rs = append(rs, f)
 		}
-		defer f.Close()
-		files = append(files, f)
+		return io.MultiReader(rs...), func() {
+			for _, x := range fs {
+				x.Close()
+			}
+		}, nil
 	}
 	ctx, cancel := context.WithTimeout(c.ctx, 90*time.Second)
 	defer cancel()
-	audio, err := extractAudio(ctx, io.MultiReader(files...))
+	rd, closeAll, err := open()
 	if err != nil {
 		return err
+	}
+	audio, fname, codec, err := audioForASR(rd)
+	closeAll()
+	if err != nil {
+		// rare codecs (E-AC-3, LATM): ffmpeg, if the router has it
+		if _, lerr := exec.LookPath("ffmpeg"); lerr == nil && (codec == "eac3" || codec == "latm") {
+			rd, closeAll, err = open()
+			if err != nil {
+				return err
+			}
+			audio, err = extractAudio(ctx, rd)
+			closeAll()
+			fname = "chunk.flac"
+		}
+		if err != nil {
+			return err
+		}
 	}
 	chunkDur := 0.0
 	for _, s := range batch {
 		chunkDur += s.dur
 	}
 	t0 := time.Now()
-	segs, lang, err := transcribe(ctx, audio)
+	segs, lang, err := transcribe(ctx, audio, fname)
 	if err != nil {
 		return fmt.Errorf("распознавание: %w", err)
 	}
@@ -246,6 +340,52 @@ func (c *channel) subsProcess(batch []*seg) error {
 	c.subs.chunks++
 	if lang != "" {
 		c.subs.lang = lang
+	}
+	st := c.subs
+	if st.detect {
+		if len(segs) == 0 { // no speech in this piece (music, ads, silence)
+			st.tries++
+			st.nextTry = time.Now().Add(30 * time.Second)
+			if st.tries >= 10 {
+				st.detect, st.why = false, "авто: речи не обнаружено"
+				c.addEvent("info", "субтитры: за 10 попыток речь не найдена — выключены (переоткройте канал для новой проверки)")
+			}
+			c.mu.Unlock()
+			return nil
+		}
+		st.samples = append(st.samples, lang)
+		dec := majority(st.samples)
+		st.detect = false
+		if len(st.samples) < 2 {
+			st.recheckAt = time.Now().Add(10 * time.Minute)
+		}
+		c.rememberLang(dec)
+		if langIs(dec, cfg.Subs.Lang) {
+			was := st.on
+			st.on, st.why = false, "авто: речь "+langRu(dec)+" — не нужны"
+			if was || len(st.samples) == 1 {
+				c.addEvent("info", "субтитры: речь "+langRu(dec)+" — не нужны, распознавание остановлено")
+			}
+			c.mu.Unlock()
+			return nil
+		}
+		if !st.on {
+			c.addEvent("tune", "субтитры: речь "+langRu(dec)+" — включаю перевод")
+		}
+		st.on, st.why = true, "авто: речь "+langRu(dec)
+	} else if !st.manual && cfg.Subs.Mode == "auto" && len(segs) > 0 {
+		// the programme switched to the target language: stop paying for it
+		if langIs(lang, cfg.Subs.Lang) {
+			st.streak++
+			if st.streak >= 3 {
+				st.on, st.why, st.streak = false, "авто: речь "+langRu(lang)+" — не нужны", 0
+				st.recheckAt = time.Now().Add(10 * time.Minute)
+				c.rememberLang(lang)
+				c.addEvent("info", "субтитры: передача перешла на язык субтитров — распознавание остановлено, проверю снова через 10 мин")
+			}
+		} else {
+			st.streak = 0
+		}
 	}
 	var ctxLines []string
 	for i := max(0, len(c.subs.cues)-3); i < len(c.subs.cues); i++ {
@@ -348,10 +488,10 @@ type asrSegment struct {
 }
 
 // transcribe: OpenAI-compatible /audio/transcriptions (Groq) with verbose_json.
-func transcribe(ctx context.Context, flac []byte) ([]asrSegment, string, error) {
+func transcribe(ctx context.Context, flac []byte, fname string) ([]asrSegment, string, error) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	fw, _ := mw.CreateFormFile("file", "chunk.flac")
+	fw, _ := mw.CreateFormFile("file", fname)
 	fw.Write(flac)
 	mw.WriteField("model", cfg.Subs.ASRModel)
 	mw.WriteField("response_format", "verbose_json")
@@ -513,7 +653,7 @@ func subsHandler(w http.ResponseWriter, r *http.Request) {
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		c.mu.Lock()
-		done := c.subs == nil || !c.subs.on || c.subs.ready[id]
+		done := c.subs == nil || !(c.subs.on || c.subs.detect) || c.subs.ready[id]
 		c.mu.Unlock()
 		if done || time.Now().After(deadline) || r.Context().Err() != nil {
 			break
@@ -602,6 +742,10 @@ type subsOut struct {
 	Available bool    `json:"available"`
 	Why       string  `json:"why,omitempty"`
 	On        bool    `json:"on"`
+	Detecting bool    `json:"detecting"`
+	Manual    bool    `json:"manual"`
+	State     string  `json:"state"`
+	Mode      string  `json:"mode"`
 	Chunks    int     `json:"chunks"`
 	Lang      string  `json:"lang,omitempty"`
 	ASRMin    float64 `json:"asr_min"`
@@ -615,11 +759,15 @@ type subsOut struct {
 
 func (c *channel) subsSummary() subsOut {
 	ok, why := subsAvailable()
-	o := subsOut{Available: ok, Why: why, Recent: []cue{}}
+	o := subsOut{Available: ok, Why: why, Recent: []cue{}, Mode: cfg.Subs.Mode}
 	st := c.subs
 	if st == nil {
+		if ok {
+			o.State = subsPlan(c.id).why
+		}
 		return o
 	}
+	o.Detecting, o.Manual, o.State = st.detect, st.manual, st.why
 	o.On, o.Chunks, o.Lang, o.LagSec = st.on, st.chunks, st.lang, st.lagSec
 	o.ASRMin = round1(st.asrSec / 60)
 	// Groq whisper-large-v3-turbo ≈ $0.04/h; DeepSeek chat ≈ $0.27 / $1.10 per 1M tokens
@@ -639,15 +787,30 @@ func (c *channel) subsSummary() subsOut {
 	return o
 }
 
-// setSubs switches subtitles for a running channel. Caller holds c.mu.
-func (c *channel) setSubs(on bool) {
+// startSubs applies a plan to a running channel. Caller holds c.mu.
+func (c *channel) startSubs(pl subsPlanT) {
 	if c.subs == nil {
 		c.subs = &subsState{ready: map[int64]bool{}, next: max(c.servedEnd-2, 0)}
 		go c.subsLoop()
 	}
-	if on && !c.subs.on {
-		c.subs.next = max(c.subs.next, c.servedEnd-2)
-		c.addEvent("info", "субтитры включены: новые реплики появятся через ~30 с; дорожка появится в плеере после переоткрытия канала")
+	st := c.subs
+	wasOn := st.on
+	st.on, st.detect, st.manual, st.why = pl.on, pl.detect, pl.manual, pl.why
+	st.tries, st.streak, st.nextTry = 0, 0, time.Time{}
+	st.next = max(st.next, c.servedEnd-2)
+	if pl.on && !wasOn {
+		c.addEvent("info", "субтитры включены ("+pl.why+"): реплики появятся через ~30 с; если дорожки нет в плеере — переоткройте канал")
 	}
-	c.subs.on = on
+}
+
+// setSubsMode: user choice from the panel: on | off | auto. Caller holds c.mu.
+func (c *channel) setSubsMode(mode string) {
+	switch mode {
+	case "on":
+		c.startSubs(subsPlanT{advertise: true, on: true, manual: true, why: "включены вручную"})
+	case "off":
+		c.startSubs(subsPlanT{manual: true, why: "выключены вручную"})
+	default:
+		c.startSubs(subsPlan(c.id))
+	}
 }

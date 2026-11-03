@@ -208,13 +208,17 @@ func apiChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			On bool `json:"on"`
+			Mode string `json:"mode"` // on | off | auto
+			On   *bool  `json:"on"`   // legacy
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if ok, why := subsAvailable(); req.On && !ok {
+		if req.Mode == "" && req.On != nil {
+			req.Mode = map[bool]string{true: "on", false: "off"}[*req.On]
+		}
+		if ok, why := subsAvailable(); req.Mode != "off" && !ok {
 			http.Error(w, why, http.StatusConflict)
 			return
 		}
@@ -222,17 +226,27 @@ func apiChannel(w http.ResponseWriter, r *http.Request) {
 		if p == nil {
 			p = &profile{}
 		}
-		on := req.On
-		p.Subs = &on
+		switch req.Mode {
+		case "on", "off":
+			v := req.Mode == "on"
+			p.Subs = &v
+		default:
+			req.Mode, p.Subs = "auto", nil
+			p.LangChecked = 0 // re-detect
+		}
 		if c != nil {
 			c.mu.Lock()
 			p.Name, p.Source = c.name, shortURL(c.srcURL)
-			c.setSubs(on)
 			c.mu.Unlock()
 		}
 		profiles.put(id, p)
 		profiles.flush()
-		writeJSON(w, map[string]bool{"on": on})
+		if c != nil {
+			c.mu.Lock()
+			c.setSubsMode(req.Mode)
+			c.mu.Unlock()
+		}
+		writeJSON(w, map[string]string{"mode": req.Mode})
 
 	case "forget":
 		if r.Method != http.MethodPost {

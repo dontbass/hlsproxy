@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var version = "3.5.0"
+var version = "3.5.1"
 
 type config struct {
 	Listen       string
@@ -72,7 +72,7 @@ func main() {
 	flag.IntVar(&cfg.MaxChannels, "max-channels", 6, "макс. одновременных каналов")
 	flag.IntVar(&cfg.MaxExtChans, "max-ext-channels", 2, "из них открытых внешними клиентами")
 	flag.BoolVar(&cfg.Subs.Enabled, "subs", false, "авто-субтитры (ключи: env HLSPROXY_ASR_KEY, HLSPROXY_LLM_KEY)")
-	flag.BoolVar(&cfg.Subs.Default, "subs-default", false, "включать субтитры для каналов без явного выбора")
+	flag.StringVar(&cfg.Subs.Mode, "subs-mode", "auto", "auto — только где речь не на языке субтитров; all — везде; manual — кнопкой на канале")
 	flag.StringVar(&cfg.Subs.Lang, "subs-lang", "ru", "язык субтитров (ru — перевод, en — без перевода)")
 	flag.StringVar(&cfg.Subs.Proxy, "subs-proxy", "", "прокси до API распознавания/перевода (http://, socks5://)")
 	flag.StringVar(&cfg.Subs.ASRURL, "subs-asr-url", "https://api.groq.com/openai/v1/audio/transcriptions", "API распознавания (OpenAI-совместимый)")
@@ -264,7 +264,7 @@ func serveChannel(c *channel, w http.ResponseWriter, r *http.Request) {
 	// the media itself is behind &m=1
 	if r.URL.Query().Get("m") == "" {
 		c.mu.Lock()
-		on := c.subs != nil && c.subs.on
+		on := c.subs != nil && (c.subs.on || c.subs.detect)
 		bw := int(c.diag.BitrateMbps * 1.2e6)
 		src := c.srcURL
 		c.mu.Unlock()
