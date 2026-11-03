@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var version = "3.5.1"
+var version = "3.5.2"
 
 type config struct {
 	Listen       string
@@ -145,6 +145,7 @@ func newMux() http.Handler {
 	mux.HandleFunc("/api/sessions", apiSessions)
 	mux.HandleFunc("/api/sessions/", apiSessions)
 	mux.HandleFunc("/api/log", apiLog)
+	mux.HandleFunc("/api/system/ffmpeg", apiFFmpeg)
 	mux.HandleFunc("/ui", uiHandler)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {

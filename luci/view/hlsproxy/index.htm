@@ -51,10 +51,6 @@ if http.formvalue("hp_subs") then
 	sys.call("/etc/init.d/hlsproxy restart >/dev/null 2>&1")
 	subs_msg = "Сохранено, служба перезапущена."
 end
-if http.formvalue("hp_ffmpeg") then
-	sys.call("(echo \"$(date) старт\"; df -h /overlay 2>/dev/null; if command -v apk >/dev/null 2>&1; then apk update && apk add ffmpeg; else opkg update && opkg install ffmpeg; fi; echo \"код выхода: $?\") >/tmp/hlsproxy-ffmpeg.log 2>&1 &")
-	subs_msg = "Установка ffmpeg запущена в фоне. Обновите страницу через минуту — ниже будет лог."
-end
 local has_ffmpeg = sys.call("command -v ffmpeg >/dev/null 2>&1") == 0
 local ff_log = nil
 do local f = io.open("/tmp/hlsproxy-ffmpeg.log"); if f then ff_log = f:read("*a"); f:close(); if #ff_log > 3000 then ff_log = ff_log:sub(-3000) end end end
@@ -173,8 +169,8 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 		<div class="cbi-value-description">Авто: при первом открытии канала один фрагмент (~24 с, ≈ $0,0003) уходит в Whisper, по языку речи субтитры включаются или нет. Решение запоминается для канала и перепроверяется раз в неделю. В панели на канале можно закрепить «Всегда» или «Никогда».</div></div></div>
 	<div class="cbi-value"><label class="cbi-value-title">ffmpeg</label>
 		<div class="cbi-value-field"><% if has_ffmpeg then %><b>установлен</b><% else %>не нужен: звук AAC, MPEG audio и AC-3 прокси извлекает сам. Нужен только для редких E-AC-3/LATM.
-		<input type="submit" name="hp_ffmpeg" class="cbi-button cbi-button-action" value="Установить ffmpeg" style="margin-left:8px"><% end %>
-		<% if ff_log and ff_log ~= "" then %><pre style="max-height:180px;overflow:auto;font-size:11px;margin-top:6px;white-space:pre-wrap"><%=pcdata(ff_log)%></pre><% end %></div></div>
+		<input type="button" id="ff_btn" class="cbi-button cbi-button-action" value="Установить ffmpeg" style="margin-left:8px" onclick="hpFF(true)"><% end %>
+		<pre id="ff_log" style="max-height:220px;overflow:auto;font-size:11px;margin-top:6px;white-space:pre-wrap<%= (ff_log and ff_log ~= '') and '' or ';display:none' %>"><%=pcdata(ff_log or '')%></pre></div></div>
 	<div class="cbi-value"><label class="cbi-value-title">Язык субтитров</label>
 		<div class="cbi-value-field"><select name="subs_lang" class="cbi-input-select">
 			<option value="ru" <%=(get('subs_lang','ru')=='ru') and 'selected' or ''%>>Русский (перевод)</option>
@@ -242,6 +238,18 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 var HP_BASE = "http://" + window.location.hostname + ":<%=port%>";
 document.getElementById('hp_ui').src = HP_BASE + "/ui";
 var a = document.getElementById('ui_link'); a.href = HP_BASE + "/ui"; a.textContent = HP_BASE + "/ui";
+function hpFF(start) {
+	var x = new XMLHttpRequest();
+	x.open(start ? 'POST' : 'GET', HP_BASE + '/api/system/ffmpeg', true);
+	x.onload = function() {
+		var d; try { d = JSON.parse(x.responseText); } catch (e) { return; }
+		var pre = document.getElementById('ff_log'), btn = document.getElementById('ff_btn');
+		pre.style.display = d.log ? '' : 'none'; pre.textContent = d.log; pre.scrollTop = pre.scrollHeight;
+		if (btn) { btn.disabled = d.running; btn.value = d.running ? 'Устанавливается…' : (d.installed ? 'Установлен' : 'Установить ffmpeg'); }
+		if (d.running) setTimeout(function() { hpFF(false); }, 2000);
+	};
+	x.send();
+}
 var HP_KEY = "<%=(key:gsub("[^%w]", ""))%>", HP_WAN_ON = <%= wan_on and 'true' or 'false' %>;
 function hpLinks() {
 	var host = (document.getElementById('ext_host') || {}).value || "";
