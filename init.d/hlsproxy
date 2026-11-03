@@ -30,7 +30,7 @@ sync_firewall() {
 
 start_service() {
 	config_load hlsproxy
-	local enabled port mode delay max_delay max_pause start_segs window concurrency all_variants ua log_dir access_key
+	local enabled port mode delay max_delay max_pause start_segs window concurrency all_variants ua log_dir access_key ext_ui
 	config_get_bool enabled main enabled 1
 	[ "$enabled" = "1" ] || return 0
 	config_get port main port 8888
@@ -45,6 +45,7 @@ start_service() {
 	config_get ua main ua ""
 	config_get log_dir main log_dir /tmp/hlsproxy-log
 	config_get access_key main access_key ""
+	config_get_bool ext_ui main ext_ui 0
 	sync_firewall
 
 	mkdir -p /etc/hlsproxy
@@ -55,6 +56,7 @@ start_service() {
 	[ "$all_variants" = "1" ] && procd_append_param command -all-variants
 	[ -n "$ua" ] && procd_append_param command -ua "$ua"
 	[ -n "$access_key" ] && procd_append_param command -access-key "$access_key"
+	[ "$ext_ui" = "1" ] && procd_append_param command -ext-ui
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param respawn 3600 5 0

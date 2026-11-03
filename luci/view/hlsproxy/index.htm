@@ -7,6 +7,7 @@ local nums = { "delay", "max_delay", "max_pause", "start_segs", "window", "concu
 local saved = false
 if http.formvalue("hp_ext") then
 	uci:set("hlsproxy", "main", "wan_access", http.formvalue("wan_access") and "1" or "0")
+	uci:set("hlsproxy", "main", "ext_ui", http.formvalue("ext_ui") and "1" or "0")
 	if http.formvalue("hp_newkey") == "1" or (uci:get("hlsproxy", "main", "access_key") or "") == "" then
 		local f = io.open("/proc/sys/kernel/random/uuid")
 		if f then uci:set("hlsproxy", "main", "access_key", (f:read("*l") or ""):gsub("-", "")); f:close() end
@@ -76,6 +77,9 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 	<div class="cbi-value"><label class="cbi-value-title">Открыть порт <%=port%> на WAN</label>
 		<div class="cbi-value-field"><input type="checkbox" name="wan_access" value="1" <%=wan_on and 'checked' or ''%>>
 		<div class="cbi-value-description">Создаёт правило файрвола «Allow-HLSProxy» (tcp/<%=port%> из wan).</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Панель извне</label>
+		<div class="cbi-value-field"><input type="checkbox" name="ext_ui" value="1" <%=(get('ext_ui','0')=='1') and 'checked' or ''%>>
+		<div class="cbi-value-description">Выключено (рекомендуется): по ключу извне доступен только просмотр каналов, панель и API — только из домашней сети.</div></div></div>
 	<div class="cbi-value"><label class="cbi-value-title">Ключ доступа</label>
 		<div class="cbi-value-field"><code id="hp_key"><%=pcdata(key ~= "" and key or "— будет создан при сохранении —")%></code>
 		<label style="margin-left:12px"><input type="checkbox" name="hp_newkey" value="1"> выпустить новый (старые ссылки перестанут работать)</label></div></div>

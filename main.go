@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var version = "3.2.1"
+var version = "3.2.2"
 
 type config struct {
 	Listen       string
@@ -37,6 +37,7 @@ type config struct {
 	MaxHold      time.Duration // max single auto-pause
 	LogDir       string
 	AccessKey    string
+	ExtUI        bool
 	MaxChannels  int
 	MaxExtChans  int
 }
@@ -63,6 +64,7 @@ func main() {
 	flag.IntVar(&maxHold, "max-pause", 40, "макс. длительность одной авто-паузы, сек (0 = не делать)")
 	flag.BoolVar(&cfg.AllVariants, "all-variants", false, "оставлять все качества в master-плейлисте")
 	flag.StringVar(&cfg.AccessKey, "access-key", "", "ключ для доступа извне: http://<IP>:порт/k/<ключ>/... (пусто = извне запрещено)")
+	flag.BoolVar(&cfg.ExtUI, "ext-ui", false, "разрешить панель и API внешним клиентам с ключом (по умолчанию только просмотр)")
 	flag.IntVar(&cfg.MaxChannels, "max-channels", 6, "макс. одновременных каналов")
 	flag.IntVar(&cfg.MaxExtChans, "max-ext-channels", 2, "из них открытых внешними клиентами")
 	flag.StringVar(&cfg.LogDir, "log-dir", "/tmp/hlsproxy-log", "журнал и история сеансов (пусто = выкл.)")

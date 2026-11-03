@@ -27,6 +27,8 @@ func TestAccess(t *testing.T) {
 		}
 	}))
 	defer up.Close()
+	routerIP = func(ip net.IP) bool { return false } // test upstream is on loopback
+	defer func() { routerIP = isRouterIP }()
 	h := newMux()
 	do := func(remote, path string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("GET", "http://203.0.113.5:8888"+path, nil)
@@ -44,8 +46,14 @@ func TestAccess(t *testing.T) {
 	if c := do(ext, "/k/wrong/ui").Code; c != 404 {
 		t.Fatalf("external wrong key: %d", c)
 	}
-	if c := do(ext, "/k/s3cretKey12345/ui").Code; c != 200 {
-		t.Fatalf("external with key ui: %d", c)
+	if c := do(ext, "/k/s3cretKey12345/ui").Code; c != 404 {
+		t.Fatalf("panel must be LAN-only by default: %d", c)
+	}
+	if c := do(ext, "/k/s3cretKey12345/api/status").Code; c != 404 {
+		t.Fatalf("api must be LAN-only by default: %d", c)
+	}
+	if c := do(lan, "/ui").Code; c != 200 {
+		t.Fatalf("lan ui: %d", c)
 	}
 	if c := do(ext, "/k/s3cretKey12345/playlist?url="+url.QueryEscape("http://192.168.1.1/cgi-bin/luci")).Code; c != 404 {
 		t.Fatalf("SSRF to LAN must be denied: %d", c)
@@ -69,6 +77,15 @@ func TestAccess(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "http://203.0.113.5:8888/k/s3cretKey12345/seg/") {
 		t.Fatalf("external media links must carry key: %d %s", w.Code, w.Body.String())
 	}
+	// the router itself is never reachable for external clients, even a known host
+	routerIP = isRouterIP
+	if c := do(ext, "/k/s3cretKey12345/proxy?url="+url.QueryEscape(up.URL+"/other.m3u8")).Code; c != 404 {
+		t.Fatalf("router self-address must be refused: %d", c)
+	}
+	if _, _, err := fetchPlaylist(markUntrusted(context.Background()), up.URL+"/list.m3u", ""); err == nil {
+		t.Fatal("untrusted dial to the router itself must fail")
+	}
+	routerIP = func(ip net.IP) bool { return false }
 	// dial guard: untrusted fetch to an unknown name resolving into LAN is refused
 	// (covers redirects / DNS rebinding); "localhost" was never learned
 	port := up.URL[strings.LastIndex(up.URL, ":")+1:]

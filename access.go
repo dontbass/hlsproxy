@@ -37,6 +37,39 @@ func isLocalIP(ip net.IP) bool {
 	return ip != nil && (ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || cgnat.Contains(ip))
 }
 
+// isRouterIP: one of this machine's own addresses (WAN/белый IP included). External
+// clients must never make the proxy connect to the router itself (LuCI, SSH, …).
+// routerIP is swappable in tests (the test upstream lives on loopback).
+var routerIP = isRouterIP
+
+func isRouterIP(ip net.IP) bool {
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return true // fail closed
+	}
+	for _, a := range addrs {
+		if n, ok := a.(*net.IPNet); ok && n.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// externalPaths: the only things an external (key) client can reach — watching.
+// The panel and API stay LAN-only unless ext_ui is enabled.
+func externalPathAllowed(p string) bool {
+	switch {
+	case p == "/playlist", p == "/proxy", strings.HasPrefix(p, "/seg/"):
+		return true
+	case cfg.ExtUI && (p == "/ui" || p == "/" || strings.HasPrefix(p, "/api/") || p == "/status"):
+		return true
+	}
+	return false
+}
+
 func clientIP(r *http.Request) net.IP {
 	h, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -119,6 +152,10 @@ func withAccess(next http.Handler) http.Handler {
 				return
 			}
 			prefix = "/k/" + key
+			if ext && !externalPathAllowed("/"+tail) {
+				denied(w, r, "путь недоступен извне")
+				return
+			}
 			r2 := r.Clone(context.WithValue(r.Context(), prefixKey, prefix))
 			r2.URL.Path = "/" + tail
 			r2.URL.RawPath = ""
@@ -179,6 +216,10 @@ func guardedDial(d *net.Dialer) func(ctx context.Context, network, addr string) 
 		}
 		var lastErr error = &net.AddrError{Err: "no address", Addr: host}
 		for _, ip := range ips {
+			if routerIP(ip.IP) {
+				lastErr = &net.AddrError{Err: "подключение к самому роутеру запрещено для внешнего клиента", Addr: ip.IP.String()}
+				continue
+			}
 			if isLocalIP(ip.IP) && !hostKnown(host) {
 				lastErr = &net.AddrError{Err: "адрес во внутренней сети запрещён для внешнего клиента", Addr: ip.IP.String()}
 				continue
@@ -241,7 +282,17 @@ func upstreamAllowed(r *http.Request, u string) (bool, string) {
 		return true, ""
 	}
 	h := p.Hostname()
+	if ip := net.ParseIP(h); ip != nil && routerIP(ip) {
+		return false, "адрес самого роутера"
+	}
 	if hostKnown(h) {
+		if ips, err := net.DefaultResolver.LookupIPAddr(r.Context(), h); err == nil {
+			for _, ip := range ips {
+				if routerIP(ip.IP) {
+					return false, "адрес самого роутера"
+				}
+			}
+		}
 		return true, ""
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
@@ -251,6 +302,9 @@ func upstreamAllowed(r *http.Request, u string) (bool, string) {
 		return false, "хост не найден"
 	}
 	for _, ip := range ips {
+		if routerIP(ip.IP) {
+			return false, "адрес самого роутера"
+		}
 		if isLocalIP(ip.IP) {
 			return false, "адрес во внутренней сети"
 		}
