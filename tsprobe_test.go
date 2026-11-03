@@ -23,3 +23,27 @@ func TestProbeTS(t *testing.T) {
 	}
 	t.Logf("clean: %+v\ndamaged: %+v", b, c)
 }
+
+func TestProbeVideo(t *testing.T) {
+	cases := []struct {
+		file, codec string
+		w, h        int
+		inter       bool
+		audio       string
+	}{
+		{"v_h264.ts", "H.264", 1280, 720, false, "AC-3"},
+		{"v_h264i.ts", "H.264", 1920, 1080, false, "AAC"},
+		{"v_h264int.ts", "H.264", 1920, 1080, true, ""},
+		{"v_hevc.ts", "HEVC", 3840, 2160, false, "AC-3"},
+		{"v_hevc1080.ts", "HEVC", 1920, 1080, false, "AAC"},
+	}
+	for _, c := range cases {
+		st := &tsState{}
+		i := probeTS("testdata/"+c.file, st)
+		v := i.Video
+		if v == nil || v.Codec != c.codec || v.Width != c.w || v.Height != c.h || v.Interlaced != c.inter || v.Audio != c.audio {
+			t.Fatalf("%s: got %+v", c.file, v)
+		}
+		t.Logf("%s: %s %s %s fps=%.2f audio=%s tracks=%d tier=%s", c.file, v.Codec, v.Profile, v.Label(), v.FPS, v.Audio, v.Tracks, v.Tier())
+	}
+}

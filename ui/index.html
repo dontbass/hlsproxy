@@ -91,6 +91,60 @@ details summary { cursor: pointer; color: var(--text-secondary); }
 .sess[aria-current="true"] { outline: 2px solid var(--series-1); outline-offset: -1px; }
 .side-h { font-size: 12px; color: var(--text-secondary); margin: 10px 2px 2px; display: flex; justify-content: space-between; }
 a { color: var(--series-1); }
+.qhero { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; }
+.qscore { text-align: center; min-width: 120px; }
+.qscore .num { font-size: 48px; font-weight: 600; line-height: 1; }
+.qscore .of { color: var(--text-muted); font-size: 13px; }
+.qscore .status { margin-top: 6px; font-size: 14px; }
+.qrow { display: grid; grid-template-columns: 110px 1fr 230px; gap: 10px; align-items: center; margin: 6px 0; }
+.qrow .lb { color: var(--text-secondary); font-size: 13px; }
+.qrow .vl { font-size: 13px; text-align: right; }
+.scale { position: relative; height: 14px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.scale .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; }
+.scale .tick { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--surface-1); }
+.scalelabels { position: relative; height: 14px; font-size: 10px; color: var(--text-muted); }
+.scalelabels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip { border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 12px; color: var(--text-secondary); background: var(--surface-1); }
+.chip b { color: var(--text-primary); font-weight: 600; }
+.tierbadge { display: inline-block; font-weight: 700; font-size: 12px; padding: 1px 7px; border-radius: 5px; background: var(--text-primary); color: var(--surface-1); letter-spacing: .02em; }
+.factors { margin: 8px 0 0; padding-left: 18px; color: var(--text-secondary); font-size: 13px; }
+.strip { display: flex; gap: 2px; height: 22px; margin-top: 6px; }
+.strip { overflow: hidden; }
+.strip i { flex: 1 1 0; min-width: 0; border-radius: 2px; }
+.viewer { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--grid); font-size: 13px; align-items: center; }
+.viewer:last-child { border-bottom: 0; }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.sysbar { display: flex; gap: 6px; flex-wrap: wrap; margin: -4px 0 12px; }
+.tablewrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.chscore { font-variant-numeric: tabular-nums; font-weight: 600; }
+@media (max-width: 700px) {
+  .viz-root { padding: 10px; }
+  h1 { font-size: 16px; }
+  .layout { gap: 10px; }
+  .list { flex-direction: row; overflow-x: auto; gap: 8px; padding-bottom: 4px; scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; }
+  .list > .card { min-width: 230px; max-width: 260px; scroll-snap-align: start; flex: none; }
+  .list .side-h { display: none; }
+  .card { padding: 12px; border-radius: 10px; }
+  .tiles { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .tile .vl { font-size: 18px; }
+  .verdict-title { font-size: 17px; }
+  .qhero { grid-template-columns: 1fr; gap: 8px; }
+  .qscore { display: flex; align-items: baseline; gap: 10px; text-align: left; }
+  .qscore .num { font-size: 40px; }
+  .qrow { grid-template-columns: 1fr; gap: 3px; }
+  .qrow .vl { text-align: left; }
+  .rec { gap: 8px; }
+  .rec .btn { flex: 1 1 auto; }
+  .btnrow .btn { flex: 1 1 40%; padding: 9px 8px; }
+  .ev { grid-template-columns: 56px 18px 1fr; font-size: 12px; }
+  .legend { gap: 8px; font-size: 11px; }
+  .top { gap: 8px; }
+  .sysbar { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .sysbar .pill { flex: none; }
+  .strip { gap: 1px; }
+  .detail, .card, .layout > * { min-width: 0; }
+}
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 1200px) { .grid2 { grid-template-columns: 1fr; } }
 </style>
@@ -104,6 +158,7 @@ a { color: var(--series-1); }
     <a href="api/log?n=1000" target="_blank" rel="noopener">журнал событий</a>
     <span class="muted" id="conn"></span>
   </div>
+  <div class="sysbar" id="sysbar"></div>
   <div class="layout">
     <div class="list" id="list"></div>
     <div class="detail" id="detail"><div class="card empty">Нет активных каналов. Включите канал в плеере — он появится здесь.</div></div>
@@ -159,7 +214,16 @@ function showTip(ev, head, rows) {
   const y = Math.min(ev.clientY + 14, window.innerHeight - tip.offsetHeight - 8);
   tip.style.left = x + "px"; tip.style.top = y + "px";
 }
-function hideTip() { tip.style.display = "none"; }
+function hideTip(ev) {
+  if (ev && ev.pointerType && ev.pointerType !== "mouse") return; // touch: keep until next tap
+  tip.style.display = "none";
+}
+// touch: a tap shows the same tooltip as hover
+document.addEventListener("pointerdown", e => {
+  if (e.pointerType === "mouse") return;
+  if (!e.target.closest("svg") && !e.target.closest(".strip")) { tip.style.display = "none"; return; }
+  e.target.dispatchEvent(new PointerEvent("pointermove", { clientX: e.clientX, clientY: e.clientY, pointerType: e.pointerType }));
+});
 
 // ---------- scales & axes
 function niceMax(v) {
@@ -169,7 +233,7 @@ function niceMax(v) {
   return 10 * p;
 }
 function frame(el, height, yMax, yUnit) {
-  const W = Math.max(300, el.clientWidth || 600), H = height;
+  const W = Math.max(280, el.clientWidth || 600), H = window.innerWidth < 700 ? Math.round(height * 0.8) : height;
   const m = { l: 40, r: 12, t: 8, b: 22 };
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img" });
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
@@ -258,7 +322,7 @@ function reserveChart(el, d) {
     if (st) rows.push({ name: "Состояние", value: st });
     showTip(ev, clock(best.t), rows);
   });
-  hit.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+  hit.addEventListener("pointerleave", ev => { if (ev.pointerType === "mouse") { cross.setAttribute("visibility", "hidden"); hideTip(); } });
   f.svg.append(hit);
   const lg = h("div", { class: "legend" });
   for (const sr of series) lg.append(h("span", {}, h("span", { class: "key-line", style: "background:" + sr.color }), sr.name));
@@ -374,6 +438,120 @@ function meter(el, d) {
   el.append(svg);
 }
 
+// ---------- quality
+const LVCOLOR = { good: "--good", warning: "--warning", serious: "--serious", critical: "--critical", info: "--text-muted" };
+function gradScale(score, level) {
+  // 5 grade bands: <35 очень плохо · 35 плохо · 55 удовл. · 75 хорошо · 90 отлично
+  const wrap = h("div");
+  const sc = h("div", { class: "scale", role: "img", "aria-label": "оценка " + score + " из 100" });
+  sc.append(h("div", { class: "fill", style: `width:${Math.max(2, score)}%;background:var(${LVCOLOR[level] || "--text-muted"})` }));
+  for (const t of [35, 55, 75, 90]) sc.append(h("div", { class: "tick", style: `left:${t}%` }));
+  const lb = h("div", { class: "scalelabels" });
+  for (const [t, n] of [[17, "оч. плохо"], [45, "плохо"], [65, "удовл."], [82, "хорошо"], [95, "отлично"]]) lb.append(h("span", { style: `left:${t}%`, text: n }));
+  wrap.append(sc, lb);
+  return wrap;
+}
+
+function qualityCard(d) {
+  const q = d.quality || {};
+  const card = h("div", { class: "card" });
+  const learning = q.learning;
+  const score = h("div", { class: "qscore" },
+    h("div", { class: "num", text: learning ? "…" : String(q.score) }),
+    h("div", { class: "of", text: learning ? "сбор данных" : "из 100" }),
+    statusBadge(q.level || "info", "Поток: " + (q.grade || "—")));
+  const rows = h("div");
+  const row = (name, val, grade, level, note) => rows.append(h("div", { class: "qrow" },
+    h("div", { class: "lb", text: name }), gradScale(val, level), h("div", { class: "vl" }, statusBadge(level, `${val} · ${grade}`), note ? h("div", { class: "muted", style: "font-size:11px", text: note }) : null)));
+  row("Картинка", q.picture, q.pic_grade, q.pic_level, q.tier ? q.tier + (q.bitrate_note ? ", битрейт " + q.bitrate_note : "") : "");
+  row("Стабильность", learning ? 0 : q.stability, q.stab_grade, q.stab_level, "за последние 30 мин");
+  card.append(h("div", { class: "qhero" }, score, rows));
+  const v = q.video;
+  const chips = h("div", { class: "chips" });
+  if (v) {
+    if (q.tier) chips.append(h("span", { class: "tierbadge", text: q.tier }));
+    chips.append(h("span", { class: "chip" }, h("b", { text: v.codec }), v.profile ? " " + v.profile : ""));
+    if (v.width) chips.append(h("span", { class: "chip" }, h("b", { text: `${v.width}×${v.height}${v.interlaced ? "i" : "p"}` }), v.fps ? ` · ${fmt(v.fps, v.fps % 1 ? 2 : 0)} к/с` : ""));
+    if (v.bit_depth) chips.append(h("span", { class: "chip", text: v.bit_depth + " бит" }));
+    if (v.audio || v.tracks) chips.append(h("span", { class: "chip", text: "звук " + (v.audio || "?") + (v.tracks > 1 ? ` · дорожек ${v.tracks}` : "") }));
+  }
+  if (q.bitrate_mbps) chips.append(h("span", { class: "chip" }, h("b", { text: fmt(q.bitrate_mbps, 1) + " Мбит/с" }), q.peak_mbps ? ` · пик ${fmt(q.peak_mbps, 1)}` : ""));
+  if (d.prov_window_s) chips.append(h("span", { class: "chip", text: `окно провайдера ${fmt(d.prov_window_s)} с` }));
+  card.append(chips);
+  const fs = [...(q.pic_factors || []), ...(q.stab_factors || [])].filter(f => f.penalty > 0 || !learning);
+  if (fs.length) {
+    const ul = h("ul", { class: "factors" });
+    for (const f of fs) ul.append(h("li", { text: (f.penalty ? `−${f.penalty}: ` : "") + f.text }));
+    card.append(h("div", { class: "sec", style: "font-size:12px;margin-top:10px", text: "Что снижает оценку" }), ul);
+  } else if (!learning) {
+    card.append(h("div", { class: "muted", style: "font-size:12px;margin-top:10px", text: "Ничего не снижает оценку за последние 30 минут." }));
+  }
+  // per-segment strip
+  const recs = d.segments.filter(r => !r.init).slice(window.innerWidth < 700 ? -60 : -120);
+  if (recs.length > 3) {
+    const lanBy = {}; for (const r of d.client || []) lanBy[r.id] = r;
+    const live = recs.filter(r => !r.failed);
+    const qmin = live.length ? Math.min(...live.map(r => r.q)) : 0;
+    const have = d.diag.have_s;
+    const strip = h("div", { class: "strip", role: "img", "aria-label": "качество последних сегментов" });
+    let nb = 0, nw = 0;
+    for (const r of recs) {
+      const ln = lanBy[r.id];
+      let lv = "good", why = "норма";
+      if (r.failed) { lv = "critical"; why = r.gap ? "потерян у провайдера" : "не скачан"; }
+      else if (r.bad) { lv = "critical"; why = "дефект потока"; }
+      else if (r.q - qmin > have) { lv = "critical"; why = "опоздал больше защиты"; }
+      else if (ln && ln.aborted) { lv = "serious"; why = "плеер оборвал загрузку"; }
+      else if ((ln && ln.x > 0 && ln.x < 1.5) || r.x < 1.2 || r.tries > 1 || r.q - qmin > have * 0.7) {
+        lv = "warning"; why = r.tries > 1 ? "со 2-й попытки" : r.x < 1.2 ? "медленно от провайдера" : (ln && ln.x < 1.5) ? "медленно до ТВ" : "почти исчерпал запас";
+      }
+      if (lv === "critical" || lv === "serious") nb++; else if (lv === "warning") nw++;
+      const cell = h("i", { style: `background:var(${LVCOLOR[lv]})` });
+      cell.addEventListener("pointermove", ev => showTip(ev, clock(r.t) + (r.id >= 0 ? " · сегм. " + r.id : ""), [
+        { name: "Оценка", value: why }, { name: "× провайдер", value: r.failed ? "—" : "×" + fmt(r.x, 1) },
+        { name: "× до ТВ", value: ln && ln.x ? "×" + fmt(ln.x, 1) : "—" }, { name: "Опоздание", value: r.failed ? "—" : fmt(r.q - qmin, 1) + " с" }]));
+      cell.addEventListener("pointerleave", hideTip);
+      strip.append(cell);
+    }
+    card.append(h("div", { class: "sec", style: "font-size:12px;margin-top:12px", text: `Последние ${recs.length} сегментов: проблемных ${nb}, на грани ${nw}` }), strip,
+      h("div", { class: "legend", style: "margin-top:6px" },
+        h("span", {}, statusBadge("good", "норма")), h("span", {}, statusBadge("warning", "на грани")),
+        h("span", {}, statusBadge("serious", "обрыв у плеера")), h("span", {}, statusBadge("critical", "фриз/дефект/потеря"))));
+  }
+  return card;
+}
+
+function viewersCard(d) {
+  const vs = d.viewers || [];
+  const card = h("div", { class: "card" }, h("h2", { text: "Зрители и трафик" }));
+  if (!vs.length) card.append(h("div", { class: "muted", text: "Нет данных о зрителях" }));
+  for (const v of vs) {
+    card.append(h("div", { class: "viewer" },
+      h("span", { class: "dot", title: v.active ? "смотрит" : "не активен", style: `background:var(${v.active ? "--good" : "--text-muted"})` }),
+      h("div", {}, h("div", {}, h("b", { text: v.external ? "Извне " : "Дома " }), h("span", { class: "sec", text: v.ip })),
+        h("div", { class: "muted", style: "font-size:11px;word-break:break-all", text: v.ua })),
+      h("div", { class: "sec", style: "text-align:right;font-size:12px", text: `${fmt(v.mb)} МБ · ${fmt(v.minutes)} мин` })));
+  }
+  card.append(h("div", { class: "muted", style: "font-size:12px;margin-top:8px", text:
+    `От провайдера ${fmt(d.upstream_mb)} МБ, отдано на ТВ ${fmt(d.served_mb)} МБ` + (d.served_mb > d.upstream_mb * 1.2 ? " (несколько зрителей на один канал — скачано один раз)" : "") }));
+  return card;
+}
+
+function renderSys(st) {
+  const sy = st.system || {}, bar = $("#sysbar");
+  bar.replaceChildren();
+  if (!sy.mem_total_mb) return;
+  const memLv = sy.mem_avail_mb < 80 ? "critical" : sy.mem_avail_mb < 200 ? "warning" : "good";
+  const tmpLv = sy.tmp_total_mb && sy.tmp_used_mb / sy.tmp_total_mb > 0.85 ? "critical" : "good";
+  const ldLv = sy.load1 > sy.cpus * 1.5 ? "warning" : "good";
+  bar.append(
+    h("span", { class: "pill" }, statusBadge(memLv, `RAM свободно ${fmt(sy.mem_avail_mb)} из ${fmt(sy.mem_total_mb)} МБ`)),
+    h("span", { class: "pill" }, statusBadge(tmpLv, `кэш ${fmt(sy.cache_mb)} МБ · tmpfs ${fmt(sy.tmp_used_mb)}/${fmt(sy.tmp_total_mb)} МБ`)),
+    h("span", { class: "pill" }, statusBadge(ldLv, `нагрузка ${fmt(sy.load1, 2)} (${sy.cpus} ядер) · прокси ${fmt(sy.proxy_rss_mb)} МБ`)),
+    h("span", { class: "pill", text: `каналов ${sy.channels} · зрителей ${sy.viewers}${sy.external_viewers ? " (извне " + sy.external_viewers + ")" : ""}` }),
+    h("span", { class: "pill", text: `трафик: провайдер ${fmt(sy.upstream_gb, 2)} ГБ → ТВ ${fmt(sy.served_gb, 2)} ГБ` }));
+}
+
 // ---------- render
 function tile(lb, vl, sub) { return h("div", { class: "card tile" }, h("div", { class: "lb", text: lb }), h("div", { class: "vl", text: vl }), sub ? h("div", { class: "sub", text: sub }) : null); }
 
@@ -387,8 +565,11 @@ function renderList() {
       list.append(h("button", { class: "card ch", "aria-current": String(state.view === "live" && c.id === state.sel),
         onclick: () => { state.view = "live"; state.sel = c.id; state.detail = null; renderList(); refresh(); } },
         h("div", { class: "nm", text: c.name, title: c.source }),
-        statusBadge(c.diag.level, c.diag.title),
-        h("div", { class: "muted", style: "font-size:12px;margin-top:4px", text:
+        h("div", { style: "display:flex;gap:8px;align-items:center;margin:2px 0" },
+          c.quality && c.quality.tier ? h("span", { class: "tierbadge", text: c.quality.tier }) : null,
+          statusBadge(c.quality ? c.quality.level : "info", c.quality && !c.quality.learning ? `${c.quality.score} · ${c.quality.grade}` : "оценивается…")),
+        h("div", { class: "muted", style: "font-size:12px", text: c.diag.title }),
+        h("div", { class: "muted", style: "font-size:12px;margin-top:2px", text:
           `защита ${fmt(c.diag.have_s)} с · нужно ${fmt(c.diag.need_s)} с · фризов ${c.stats.Freezes}` + (c.idle_s > 15 ? " · не смотрят" : "") })));
     }
   }
@@ -400,7 +581,8 @@ function renderList() {
       onclick: () => openSession(m.file) },
       h("div", { class: "nm", text: m.name }),
       h("div", { class: "muted", style: "font-size:12px", text: `${m.start} – ${m.end.slice(11)}${m.live ? " (идёт)" : ""} · ${fmt(m.minutes)} мин` }),
-      h("div", { style: "font-size:12px;margin-top:2px" }, statusBadge(lv, `фризов ${m.freezes} · отметок ${m.marks} · дефектов ${m.defects}`))));
+      h("div", { style: "font-size:12px;margin-top:2px" }, statusBadge(m.qlevel || lv, (m.grade && !m.grade.startsWith("оцен") ? `${m.score} · ${m.grade} · ` : "") + `фризов ${m.freezes} · отметок ${m.marks}`)),
+      m.picture ? h("div", { class: "muted", style: "font-size:11px", text: m.picture }) : null));
   }
 }
 
@@ -434,6 +616,7 @@ function renderDetail() {
   root.classList.remove("stale");
   root.replaceChildren();
 
+  root.append(qualityCard(d));
   if (!live) {
     root.append(h("div", { class: "banner" }, "Сохранённый сеанс: ", h("b", { text: d.name }), ` · начало ${new Date(d.t0_unix * 1000).toLocaleString("ru-RU")}` +
       (d.live ? " · канал ещё идёт, снимок раз в 5 мин" : "") + " · ",
@@ -493,6 +676,7 @@ function renderDetail() {
     root.append(mc);
   }
 
+  root.append(viewersCard(d));
   // tiles
   const sx = d.stats;
   root.append(h("div", { class: "tiles" },
@@ -537,7 +721,7 @@ function renderDetail() {
       ln ? fmt(ln.x, 1) : "—", r.failed || r.init ? "—" : fmt(r.q - qmin, 1), r.tries || "—", r.failed ? "—" : defect,
       r.failed ? (r.gap ? "потерян у провайдера" : "не скачан") : r.init ? "стартовое окно" : ""].map(t => h("td", { text: String(t) }))));
   }
-  root.append(h("details", { class: "card" }, h("summary", { text: "Таблица последних сегментов" }), tb));
+  root.append(h("details", { class: "card" }, h("summary", { text: "Таблица последних сегментов" }), h("div", { class: "tablewrap" }, tb)));
 }
 
 async function refresh() {
@@ -548,6 +732,7 @@ async function refresh() {
     $("#ver").textContent = "v" + st.version;
     $("#mode").textContent = MODES[st.mode] || st.mode;
     $("#conn").textContent = "";
+    renderSys(st);
     if (Date.now() - state.sessAt > 10000) {
       state.sessAt = Date.now();
       try { state.sessions = await (await fetch("api/sessions", { cache: "no-store" })).json(); } catch (e) {}

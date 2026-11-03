@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var version = "3.3.0"
+var version = "3.4.0"
 
 type config struct {
 	Listen       string
@@ -246,6 +246,7 @@ func serveChannel(c *channel, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.mu.Lock()
+	c.noteViewer(clientIP(r).String(), r.UserAgent(), isExternal(r), 0)
 	c.notePoll(time.Now())
 	c.advance(time.Now())
 	body := c.render(baseURL(r))
@@ -358,12 +359,12 @@ func segHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sec := time.Since(t0).Seconds() - held
-	rec := clRec{ID: id, KB: cw.n / 1024, Sec: round2(sec), Held: round1(held),
+	rec := clRec{ID: id, KB: cw.n / 1024, Held: round1(held),
 		Aborted: r.Context().Err() != nil || full && cw.n < st.Size()}
 	c.mu.Lock()
 	rec.T = round1(c.rel(time.Now()))
 	sec = math.Max(sec, 0.001)
-	rec.Sec = round2(sec)
+	rec.Sec = math.Round(sec*1000) / 1000
 	rec.X = round2(math.Min(s.dur/sec, 99))
 	rec.Mbps = round1(math.Min(float64(cw.n)*8/1e6/sec, 9999))
 	if rec.Aborted {
@@ -371,6 +372,8 @@ func segHandler(w http.ResponseWriter, r *http.Request) {
 		c.addEvent("warn", fmt.Sprintf("плеер оборвал загрузку сегм. %d на %d из %d КБ (таймаут/переключение/ошибка у плеера)", id, cw.n/1024, st.Size()/1024))
 	}
 	c.addCl(rec)
+	c.served += cw.n
+	c.noteViewer(clientIP(r).String(), r.UserAgent(), isExternal(r), cw.n)
 	c.mu.Unlock()
 }
 

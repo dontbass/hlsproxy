@@ -194,6 +194,9 @@ type channel struct {
 	lastBadEv time.Time
 	cl        []clRec
 	lastPoll  time.Time
+	video     *videoInfo
+	viewers   map[string]*viewer
+	served    int64 // bytes sent to players
 	marks     []mark
 	lastSave  time.Time
 
@@ -206,6 +209,7 @@ type channel struct {
 	lastTick time.Time
 	lastSamp time.Time
 	diag     diagnosis
+	qual     quality
 	stats    chanStats
 }
 
@@ -388,6 +392,8 @@ func (r *registry) remove(c *channel) {
 	c.saveProfile(true)
 	c.addEvent("info", "канал остановлен")
 	c.saveSession(true)
+	totals.upstream.Add(c.stats.Bytes)
+	totals.served.Add(c.served)
 	c.mu.Unlock()
 	os.RemoveAll(c.dir())
 }
@@ -768,6 +774,17 @@ func (c *channel) download(s *seg) {
 	if el > 0.01 {
 		r.X = round2(s.dur / el)
 	}
+	if ti != nil && ti.Video != nil {
+		old := ""
+		if c.video != nil {
+			old = c.video.Codec + c.video.Label()
+		}
+		if nw := ti.Video.Codec + ti.Video.Label(); nw != old {
+			v := ti.Video
+			c.addEvent("info", fmt.Sprintf("картинка: %s %s %s, %.0f к/с, звук %s", v.Tier(), v.Codec, v.Label(), v.FPS, strings.TrimSpace(v.Audio+" ")))
+		}
+		c.video = ti.Video
+	}
 	if ti != nil && ti.OK && ti.HasVideo {
 		s.ts = ti
 		r.CC = ti.CCErr
@@ -816,6 +833,46 @@ func (c *channel) recByID(id int64) *segRec {
 		}
 	}
 	return nil
+}
+
+type viewer struct {
+	IP       string    `json:"ip"`
+	UA       string    `json:"ua"`
+	External bool      `json:"external"`
+	First    time.Time `json:"-"`
+	Last     time.Time `json:"-"`
+	Bytes    int64     `json:"-"`
+}
+
+func (c *channel) noteViewer(ip, ua string, external bool, bytes int64) {
+	if c.viewers == nil {
+		c.viewers = map[string]*viewer{}
+	}
+	v := c.viewers[ip]
+	if v == nil {
+		v = &viewer{IP: ip, UA: ua, External: external, First: time.Now()}
+		c.viewers[ip] = v
+		where := "дома"
+		if external {
+			where = "извне"
+		}
+		c.addEvent("info", fmt.Sprintf("новый зритель %s (%s): %s", ip, where, shortUA(ua)))
+	}
+	v.Last = time.Now()
+	v.Bytes += bytes
+	if ua != "" {
+		v.UA = ua
+	}
+}
+
+func shortUA(ua string) string {
+	if len(ua) > 60 {
+		return ua[:60] + "…"
+	}
+	if ua == "" {
+		return "без User-Agent"
+	}
+	return ua
 }
 
 func (c *channel) addCl(r clRec) {

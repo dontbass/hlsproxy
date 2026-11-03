@@ -101,6 +101,10 @@ type sessionMeta struct {
 	Marks    int     `json:"marks"`
 	Aborted  int64   `json:"aborted"`
 	Restarts int64   `json:"restarts"`
+	Score    int     `json:"score"`
+	Grade    string  `json:"grade"`
+	QLevel   string  `json:"qlevel"`
+	Picture  string  `json:"picture"`
 }
 
 // saveSession snapshots the channel. Caller holds c.mu; the write happens async.
@@ -125,6 +129,10 @@ func (c *channel) saveSession(final bool) {
 		Verdict: c.diag.Verdict, Level: c.diag.Level, Title: c.diag.Title,
 		Freezes: c.stats.Freezes, Holds: c.stats.Holds, Defects: c.stats.Defects, Marks: len(c.marks),
 		Aborted: c.stats.ClAborted, Restarts: c.stats.ClientRest,
+		Score: c.qual.Score, Grade: c.qual.Grade, QLevel: c.qual.Level,
+	}
+	if v := c.video; v != nil {
+		meta.Picture = strings.TrimSpace(v.Tier() + " " + v.Codec)
 	}
 	mb, _ := json.Marshal(meta)
 	go func() {

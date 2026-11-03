@@ -21,27 +21,32 @@ func uiHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type chanSummary struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Source      string    `json:"source"`
-	UptimeSec   int64     `json:"uptime_s"`
-	IdleSec     int64     `json:"idle_s"`
-	Started     bool      `json:"started"`
-	SegDur      float64   `json:"seg_dur_s"`
-	LeadSec     float64   `json:"delay_s"`       // behind provider edge now
-	ReadyAhead  float64   `json:"ready_ahead_s"` // downloaded reserve past the edge
-	ClientBuf   float64   `json:"client_buf_s"`  // estimated player buffer
-	ClientPlay  bool      `json:"client_playing"`
-	Holding     bool      `json:"holding"`
-	Stall       bool      `json:"stall"`
-	Delay       float64   `json:"delay_param_s"`
-	Conc        int       `json:"concurrency"`
-	Exposed     int       `json:"exposed"`
-	Downloading int       `json:"downloading"`
-	Pending     int       `json:"pending"`
-	CacheMB     float64   `json:"cache_mb"`
-	Stats       chanStats `json:"stats"`
-	Diag        diagnosis `json:"diag"`
+	ID          string      `json:"id"`
+	Name        string      `json:"name"`
+	Source      string      `json:"source"`
+	UptimeSec   int64       `json:"uptime_s"`
+	IdleSec     int64       `json:"idle_s"`
+	Started     bool        `json:"started"`
+	SegDur      float64     `json:"seg_dur_s"`
+	LeadSec     float64     `json:"delay_s"`       // behind provider edge now
+	ReadyAhead  float64     `json:"ready_ahead_s"` // downloaded reserve past the edge
+	ClientBuf   float64     `json:"client_buf_s"`  // estimated player buffer
+	ClientPlay  bool        `json:"client_playing"`
+	Holding     bool        `json:"holding"`
+	Stall       bool        `json:"stall"`
+	Delay       float64     `json:"delay_param_s"`
+	Conc        int         `json:"concurrency"`
+	Exposed     int         `json:"exposed"`
+	Downloading int         `json:"downloading"`
+	Pending     int         `json:"pending"`
+	CacheMB     float64     `json:"cache_mb"`
+	Stats       chanStats   `json:"stats"`
+	Diag        diagnosis   `json:"diag"`
+	Quality     quality     `json:"quality"`
+	Viewers     []viewerOut `json:"viewers"`
+	UpstreamMB  float64     `json:"upstream_mb"`
+	ServedMB    float64     `json:"served_mb"`
+	ProvWinS    float64     `json:"prov_window_s"`
 }
 
 func (c *channel) summary() chanSummary {
@@ -55,6 +60,8 @@ func (c *channel) summary() chanSummary {
 		ClientBuf: round1(c.clBuf), ClientPlay: c.clPlaying,
 		Holding: c.holding, Stall: c.stallActive,
 		Delay: c.delay, Conc: c.conc, Stats: c.stats, Diag: c.diag,
+		Quality: c.qual, Viewers: c.viewerList(), ProvWinS: round1(c.provWin),
+		UpstreamMB: round1(float64(c.stats.Bytes) / 1e6), ServedMB: round1(float64(c.served) / 1e6),
 	}
 	st.Stats.EdgeStallS = round1(st.Stats.EdgeStallS)
 	st.Stats.FreezeS = round1(st.Stats.FreezeS)
@@ -93,9 +100,10 @@ func apiStatus(w http.ResponseWriter, r *http.Request) {
 		DelaySec  int           `json:"delay_cfg_s"`
 		MaxDelay  int           `json:"max_delay_s"`
 		Profiles  int           `json:"profiles"`
+		System    sysInfo       `json:"system"`
 		Channels  []chanSummary `json:"channels"`
 	}{version, cfg.Mode, int64(time.Since(startedAt).Seconds()), int(cfg.Delay.Seconds()),
-		int(cfg.MaxDelay.Seconds()), len(profiles.all()), []chanSummary{}}
+		int(cfg.MaxDelay.Seconds()), len(profiles.all()), readSys(), []chanSummary{}}
 	for _, c := range channels.list() {
 		c.mu.Lock()
 		out.Channels = append(out.Channels, c.summary())

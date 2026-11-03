@@ -179,6 +179,7 @@ func (c *channel) analyze(now time.Time) {
 	}
 	c.otherCauses(&d, nowR)
 	c.diag = d
+	c.qual = c.computeQuality(d, nowR)
 	if d.Verdict != "learning" && d.NeedS > c.sessNeed {
 		c.sessNeed = d.NeedS
 	}
