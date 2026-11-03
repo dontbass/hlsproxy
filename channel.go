@@ -273,12 +273,11 @@ func segExt(u string) string {
 // ---------------------------------------------------------------- registry
 
 type registry struct {
-	mu    sync.Mutex
-	m     map[string]*channel
-	names map[string]string // upstream URL -> channel name from the m3u list
+	mu sync.Mutex
+	m  map[string]*channel
 }
 
-var channels = &registry{m: map[string]*channel{}, names: map[string]string{}}
+var channels = &registry{m: map[string]*channel{}}
 
 func (r *registry) get(id string) *channel {
 	r.mu.Lock()
@@ -296,23 +295,22 @@ func (r *registry) list() []*channel {
 	return out
 }
 
-func (r *registry) setName(u, name string) {
-	if name == "" {
-		return
+// setName remembers the title for a stream URL (persistent) and renames a running
+// channel that still shows its address.
+func (r *registry) setName(u, name string) bool {
+	id := chanID(u)
+	if !names.set(id, name) {
+		return false
 	}
-	r.mu.Lock()
-	r.names[u] = name
-	if len(r.names) > 5000 {
-		r.names = map[string]string{u: name}
+	if c := r.get(id); c != nil {
+		c.mu.Lock()
+		c.name = strings.TrimSpace(name)
+		c.mu.Unlock()
 	}
-	r.mu.Unlock()
+	return true
 }
 
-func (r *registry) nameOf(u string) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.names[u]
-}
+func (r *registry) nameOf(u string) string { return names.get(chanID(u)) }
 
 func (r *registry) create(src, finalURL, ua string, p *mediaPlaylist, external bool) *channel {
 	id := chanID(src)
@@ -338,7 +336,7 @@ func (r *registry) create(src, finalURL, ua string, p *mediaPlaylist, external b
 	ctx, cancel := context.WithCancel(base)
 	now := time.Now()
 	c := &channel{
-		id: id, srcURL: src, pollURL: finalURL, ua: ua, name: r.names[src],
+		id: id, srcURL: src, pollURL: finalURL, ua: ua, name: names.get(id),
 		ctx: ctx, cancel: cancel,
 		wake:      make(chan struct{}, 1),
 		startedCh: make(chan struct{}),
@@ -351,10 +349,13 @@ func (r *registry) create(src, finalURL, ua string, p *mediaPlaylist, external b
 	r.m[id] = c
 	r.mu.Unlock()
 
-	if c.name == "" {
-		c.name = shortURL(src)
-	}
 	prof := profiles.get(id)
+	if c.name == "" && prof != nil && !looksLikeURL(prof.Name) {
+		c.name = prof.Name
+	}
+	if c.name == "" {
+		c.name = fallbackName(src)
+	}
 	if cfg.Mode != "off" && prof != nil {
 		if prof.Delay > 0 {
 			c.delay = math.Min(float64(prof.Delay), cfg.MaxDelay.Seconds())

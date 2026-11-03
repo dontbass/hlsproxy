@@ -134,3 +134,20 @@ func TestAccess(t *testing.T) {
 		channels.remove(c)
 	}
 }
+
+func TestNamesPersist(t *testing.T) {
+	p := t.TempDir() + "/names.json"
+	names = &nameStore{m: map[string]nameEntry{}, lists: map[string]int64{}}
+	names.load(p)
+	channels.setName("http://prov/ch/1/index.m3u8", "Первый канал HD")
+	names.noteList("http://prov/list.m3u")
+	names.flush()
+	names = &nameStore{m: map[string]nameEntry{}, lists: map[string]int64{}}
+	names.load(p)
+	if n := channels.nameOf("http://prov/ch/1/index.m3u8"); n != "Первый канал HD" {
+		t.Fatalf("name not persisted: %q", n)
+	}
+	if _, ok := names.lists["http://prov/list.m3u"]; !ok {
+		t.Fatal("list url not persisted")
+	}
+}

@@ -96,6 +96,17 @@ func lookupSaved(id string) (savedPlaylist, bool) {
 	return p, ok
 }
 
+func allSaved() []savedPlaylist {
+	lookupSaved("") // refresh from disk if changed
+	saved.Lock()
+	defer saved.Unlock()
+	out := make([]savedPlaylist, 0, len(saved.m))
+	for _, p := range saved.m {
+		out = append(out, p)
+	}
+	return out
+}
+
 // /pl/<id>
 func savedHandler(w http.ResponseWriter, r *http.Request) {
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/pl/"), "/")

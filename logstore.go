@@ -196,6 +196,22 @@ func apiSessions(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		// old snapshots carry the address as name: patch in the real title if known
+		var probe struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(b, &probe) == nil && looksLikeURL(probe.Name) {
+			if n := names.get(probe.ID); n != "" {
+				var full map[string]any
+				if json.Unmarshal(b, &full) == nil {
+					full["name"] = n
+					if nb, err := json.Marshal(full); err == nil {
+						b = nb
+					}
+				}
+			}
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.URL.Query().Get("download") != "" {
@@ -216,6 +232,11 @@ func apiSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		var m sessionMeta
 		if json.Unmarshal(b, &m) == nil {
+			if looksLikeURL(m.Name) {
+				if n := names.get(m.ID); n != "" {
+					m.Name = n
+				}
+			}
 			out = append(out, m)
 		}
 	}

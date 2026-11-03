@@ -42,7 +42,10 @@ h2 { font-size: 15px; margin: 0 0 8px; font-weight: 600; }
 .list { display: flex; flex-direction: column; gap: 8px; }
 .ch { cursor: pointer; text-align: left; font: inherit; color: inherit; width: 100%; }
 .ch[aria-current="true"] { outline: 2px solid var(--series-1); outline-offset: -1px; }
-.ch .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layout > *, .detail > *, .card, .list > * { min-width: 0; }
+.src { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.chname { font-size: 16px; font-weight: 600; margin-bottom: 8px; overflow-wrap: anywhere; }
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-primary); }
 .status i { width: 16px; height: 16px; border-radius: 50%; display: inline-grid; place-items: center; font-style: normal; font-size: 11px; font-weight: 700; color: #fff; flex: none; }
 .lv-good i { background: var(--good); } .lv-warning i { background: var(--warning); color: #0b0b0b; }
@@ -455,6 +458,8 @@ function gradScale(score, level) {
 function qualityCard(d) {
   const q = d.quality || {};
   const card = h("div", { class: "card" });
+  card.append(h("div", { class: "chname", text: d.name }));
+  if (d.name !== d.source) card.append(h("div", { class: "src", style: "margin:-6px 0 10px", text: d.source }));
   const learning = q.learning;
   const score = h("div", { class: "qscore" },
     h("div", { class: "num", text: learning ? "…" : String(q.score) }),
@@ -579,7 +584,7 @@ function renderList() {
     const lv = m.marks ? "serious" : m.level || "info";
     list.append(h("button", { class: "card sess", "aria-current": String(state.view === "session" && state.sessFile === m.file),
       onclick: () => openSession(m.file) },
-      h("div", { class: "nm", text: m.name }),
+      h("div", { class: "nm", text: m.name, title: m.name }),
       h("div", { class: "muted", style: "font-size:12px", text: `${m.start} – ${m.end.slice(11)}${m.live ? " (идёт)" : ""} · ${fmt(m.minutes)} мин` }),
       h("div", { style: "font-size:12px;margin-top:2px" }, statusBadge(m.qlevel || lv, (m.grade && !m.grade.startsWith("оцен") ? `${m.score} · ${m.grade} · ` : "") + `фризов ${m.freezes} · отметок ${m.marks}`)),
       m.picture ? h("div", { class: "muted", style: "font-size:11px", text: m.picture }) : null));
@@ -618,7 +623,7 @@ function renderDetail() {
 
   root.append(qualityCard(d));
   if (!live) {
-    root.append(h("div", { class: "banner" }, "Сохранённый сеанс: ", h("b", { text: d.name }), ` · начало ${new Date(d.t0_unix * 1000).toLocaleString("ru-RU")}` +
+    root.append(h("div", { class: "banner", style: "overflow-wrap:anywhere" }, "Сохранённый сеанс: ", h("b", { text: d.name }), ` · начало ${new Date(d.t0_unix * 1000).toLocaleString("ru-RU")}` +
       (d.live ? " · канал ещё идёт, снимок раз в 5 мин" : "") + " · ",
       h("a", { href: "api/sessions/" + encodeURIComponent(d.__file) + "?download=1", text: "скачать JSON" })));
   } else {
@@ -632,7 +637,7 @@ function renderDetail() {
 
   // verdict
   const v = h("div", { class: "card" },
-    h("div", { class: "muted", text: d.name + " · " + d.source }),
+    h("div", { class: "sec", style: "font-size:12px", text: "Запас и доставка от провайдера" }),
     h("div", { class: "verdict-title status " + cls }, h("i", { text: ic, "aria-hidden": "true" }), h("span", { text: g.title })));
   const ul = h("ul", { class: "reasons" }); for (const r of g.reasons || []) ul.append(h("li", { text: r })); v.append(ul);
   const m = h("div", { class: "meter" }); v.append(h("div", { style: "margin-top:10px" }, h("div", { class: "sec", style: "font-size:12px", text: "Защита от провалов провайдера, секунд" }), m));

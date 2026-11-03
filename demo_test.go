@@ -24,10 +24,13 @@ func TestDemo(t *testing.T) {
 	profiles.load(t.TempDir() + "/p.json")
 	os.RemoveAll(cfg.LogDir)
 	logs.init(cfg.LogDir)
+	names.load(t.TempDir() + "/names.json")
 	up := &fakeUpstream{t0: time.Now(), rnd: rand.New(rand.NewSource(3))}
 	us := httptest.NewServer(up)
 	defer us.Close()
-	channels.setName(us.URL+"/live.m3u8", "Первый UHD")
+	if n := os.Getenv("DEMO_NAME"); n != "-" {
+		channels.setName(us.URL+"/live.m3u8", "Первый UHD")
+	}
 	go http.ListenAndServe("127.0.0.1:18888", newMux())
 	time.Sleep(300 * time.Millisecond)
 	simPlayer(t, "http://127.0.0.1:18888/proxy?url="+url.QueryEscape(us.URL+"/live.m3u8"), time.Duration(envInt("DEMO_SECS", 80))*time.Second)

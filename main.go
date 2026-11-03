@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var version = "3.4.0"
+var version = "3.4.1"
 
 type config struct {
 	Listen       string
@@ -37,6 +37,7 @@ type config struct {
 	ProfilePath  string
 	MaxHold      time.Duration // max single auto-pause
 	LogDir       string
+	NamesPath    string
 	AccessKey    string
 	ExtUI        bool
 	MaxChannels  int
@@ -69,6 +70,7 @@ func main() {
 	flag.BoolVar(&cfg.ExtUI, "ext-ui", false, "разрешить панель и API внешним клиентам с ключом (по умолчанию только просмотр)")
 	flag.IntVar(&cfg.MaxChannels, "max-channels", 6, "макс. одновременных каналов")
 	flag.IntVar(&cfg.MaxExtChans, "max-ext-channels", 2, "из них открытых внешними клиентами")
+	flag.StringVar(&cfg.NamesPath, "names", "/etc/hlsproxy/names.json", "справочник названий каналов")
 	flag.StringVar(&cfg.LogDir, "log-dir", "/tmp/hlsproxy-log", "журнал и история сеансов (пусто = выкл.)")
 	flag.StringVar(&cfg.UA, "ua", "", "User-Agent к провайдеру (по умолчанию — как у плеера)")
 	showVer := flag.Bool("version", false, "версия")
@@ -92,6 +94,7 @@ func main() {
 	}
 	profiles.load(cfg.ProfilePath)
 	logs.init(cfg.LogDir)
+	names.load(cfg.NamesPath)
 	logs.write(time.Now().Format("2006-01-02 15:04:05") + "  info  [hlsproxy] запуск " + version + ", mode=" + cfg.Mode + "\n")
 	go channels.janitor()
 
@@ -211,6 +214,7 @@ func servePlaylist(w http.ResponseWriter, r *http.Request, src string, trusted b
 			return wrap(u)
 		}))
 	case kindChannels:
+		names.noteList(src)
 		for u, n := range channelNames(body, base) {
 			channels.setName(u, n)
 		}
