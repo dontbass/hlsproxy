@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var version = "3.2.0"
+var version = "3.2.1"
 
 type config struct {
 	Listen       string
@@ -37,6 +37,8 @@ type config struct {
 	MaxHold      time.Duration // max single auto-pause
 	LogDir       string
 	AccessKey    string
+	MaxChannels  int
+	MaxExtChans  int
 }
 
 var cfg config
@@ -61,6 +63,8 @@ func main() {
 	flag.IntVar(&maxHold, "max-pause", 40, "макс. длительность одной авто-паузы, сек (0 = не делать)")
 	flag.BoolVar(&cfg.AllVariants, "all-variants", false, "оставлять все качества в master-плейлисте")
 	flag.StringVar(&cfg.AccessKey, "access-key", "", "ключ для доступа извне: http://<IP>:порт/k/<ключ>/... (пусто = извне запрещено)")
+	flag.IntVar(&cfg.MaxChannels, "max-channels", 6, "макс. одновременных каналов")
+	flag.IntVar(&cfg.MaxExtChans, "max-ext-channels", 2, "из них открытых внешними клиентами")
 	flag.StringVar(&cfg.LogDir, "log-dir", "/tmp/hlsproxy-log", "журнал и история сеансов (пусто = выкл.)")
 	flag.StringVar(&cfg.UA, "ua", "", "User-Agent к провайдеру (по умолчанию — как у плеера)")
 	showVer := flag.Bool("version", false, "версия")
@@ -87,7 +91,8 @@ func main() {
 	logs.write(time.Now().Format("2006-01-02 15:04:05") + "  info  [hlsproxy] запуск " + version + ", mode=" + cfg.Mode + "\n")
 	go channels.janitor()
 
-	srv := &http.Server{Addr: cfg.Listen, Handler: newMux(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: cfg.Listen, Handler: newMux(), ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout: 120 * time.Second, MaxHeaderBytes: 16 << 10}
 	if cfg.AccessKey != "" && len(cfg.AccessKey) < 12 {
 		log.Printf("ВНИМАНИЕ: access_key короче 12 символов")
 	}
@@ -155,7 +160,18 @@ func playlistHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ua := clientUA(r)
-	body, final, err := fetchPlaylist(r.Context(), src, ua)
+	ext := isExternal(r)
+	fctx := r.Context()
+	if ext {
+		fctx = markUntrusted(fctx)
+	}
+	// hosts from this playlist become "known" (allowed even on private addresses)
+	// only if the request is from LAN or the playlist itself came from a known host
+	trustLearn := !ext
+	if p, err := url.Parse(src); err == nil && hostKnown(p.Hostname()) {
+		trustLearn = true
+	}
+	body, final, err := fetchPlaylist(fctx, src, ua)
 	if err != nil {
 		log.Printf("плейлист %s: %v", shortURL(src), err)
 		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
@@ -163,7 +179,9 @@ func playlistHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	base, _ := url.Parse(final)
 	wrap := func(u string) string {
-		learnHost(u)
+		if trustLearn {
+			learnHost(u)
+		}
 		return baseURL(r) + "/proxy?url=" + url.QueryEscape(u)
 	}
 
@@ -185,7 +203,12 @@ func playlistHandler(w http.ResponseWriter, r *http.Request) {
 			writeM3U(w, absolutizeMedia(body, base))
 			return
 		}
-		serveChannel(channels.create(src, final, ua, p), w, r)
+		c := channels.create(src, final, ua, p, ext)
+		if c == nil {
+			http.Error(w, "слишком много одновременных каналов", http.StatusServiceUnavailable)
+			return
+		}
+		serveChannel(c, w, r)
 	default:
 		http.Error(w, "upstream did not return an m3u playlist", http.StatusBadGateway)
 	}

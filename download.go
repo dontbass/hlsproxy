@@ -18,10 +18,10 @@ import (
 // header timeouts plus an idle-read watchdog (no bytes for N seconds = dead).
 var upstreamTransport = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
-	DialContext: (&net.Dialer{
+	DialContext: guardedDial(&net.Dialer{
 		Timeout:   5 * time.Second,
 		KeepAlive: 30 * time.Second,
-	}).DialContext,
+	}),
 	TLSHandshakeTimeout:   6 * time.Second,
 	ResponseHeaderTimeout: 10 * time.Second,
 	IdleConnTimeout:       90 * time.Second,

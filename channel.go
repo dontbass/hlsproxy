@@ -123,11 +123,12 @@ type event struct {
 }
 
 type channel struct {
-	id      string
-	srcURL  string
-	pollURL string
-	ua      string
-	name    string
+	id       string
+	srcURL   string
+	pollURL  string
+	ua       string
+	name     string
+	external bool // opened by an external (key) client: upstream fetches are guarded
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -309,14 +310,28 @@ func (r *registry) nameOf(u string) string {
 	return r.names[u]
 }
 
-func (r *registry) create(src, finalURL, ua string, p *mediaPlaylist) *channel {
+func (r *registry) create(src, finalURL, ua string, p *mediaPlaylist, external bool) *channel {
 	id := chanID(src)
 	r.mu.Lock()
 	if c := r.m[id]; c != nil {
 		r.mu.Unlock()
 		return c
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	nExt := 0
+	for _, c := range r.m {
+		if c.external {
+			nExt++
+		}
+	}
+	if maxc := cfg.MaxChannels; maxc > 0 && len(r.m) >= maxc || external && cfg.MaxExtChans > 0 && nExt >= cfg.MaxExtChans {
+		r.mu.Unlock()
+		return nil
+	}
+	base := context.Background()
+	if external {
+		base = markUntrusted(base)
+	}
+	ctx, cancel := context.WithCancel(base)
 	now := time.Now()
 	c := &channel{
 		id: id, srcURL: src, pollURL: finalURL, ua: ua, name: r.names[src],
@@ -326,7 +341,7 @@ func (r *registry) create(src, finalURL, ua string, p *mediaPlaylist) *channel {
 		seenURI:   map[string]struct{}{},
 		t0:        now, lastTick: now,
 		servedEnd: -1, clLastSeg: -1,
-		delay: cfg.Delay.Seconds(), conc: cfg.Concurrency,
+		delay: cfg.Delay.Seconds(), conc: cfg.Concurrency, external: external,
 	}
 	c.touch()
 	r.m[id] = c
