@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var version = "3.4.1"
+var version = "3.5.0"
 
 type config struct {
 	Listen       string
@@ -38,6 +38,7 @@ type config struct {
 	MaxHold      time.Duration // max single auto-pause
 	LogDir       string
 	NamesPath    string
+	Subs         subsConfig
 	AccessKey    string
 	ExtUI        bool
 	MaxChannels  int
@@ -70,6 +71,14 @@ func main() {
 	flag.BoolVar(&cfg.ExtUI, "ext-ui", false, "разрешить панель и API внешним клиентам с ключом (по умолчанию только просмотр)")
 	flag.IntVar(&cfg.MaxChannels, "max-channels", 6, "макс. одновременных каналов")
 	flag.IntVar(&cfg.MaxExtChans, "max-ext-channels", 2, "из них открытых внешними клиентами")
+	flag.BoolVar(&cfg.Subs.Enabled, "subs", false, "авто-субтитры (ключи: env HLSPROXY_ASR_KEY, HLSPROXY_LLM_KEY)")
+	flag.BoolVar(&cfg.Subs.Default, "subs-default", false, "включать субтитры для каналов без явного выбора")
+	flag.StringVar(&cfg.Subs.Lang, "subs-lang", "ru", "язык субтитров (ru — перевод, en — без перевода)")
+	flag.StringVar(&cfg.Subs.Proxy, "subs-proxy", "", "прокси до API распознавания/перевода (http://, socks5://)")
+	flag.StringVar(&cfg.Subs.ASRURL, "subs-asr-url", "https://api.groq.com/openai/v1/audio/transcriptions", "API распознавания (OpenAI-совместимый)")
+	flag.StringVar(&cfg.Subs.ASRModel, "subs-asr-model", "whisper-large-v3-turbo", "модель распознавания")
+	flag.StringVar(&cfg.Subs.LLMURL, "subs-llm-url", "https://api.deepseek.com/chat/completions", "API перевода (OpenAI-совместимый)")
+	flag.StringVar(&cfg.Subs.LLMModel, "subs-llm-model", "deepseek-chat", "модель перевода")
 	flag.StringVar(&cfg.NamesPath, "names", "/etc/hlsproxy/names.json", "справочник названий каналов")
 	flag.StringVar(&cfg.LogDir, "log-dir", "/tmp/hlsproxy-log", "журнал и история сеансов (пусто = выкл.)")
 	flag.StringVar(&cfg.UA, "ua", "", "User-Agent к провайдеру (по умолчанию — как у плеера)")
@@ -95,6 +104,7 @@ func main() {
 	profiles.load(cfg.ProfilePath)
 	logs.init(cfg.LogDir)
 	names.load(cfg.NamesPath)
+	initSubs()
 	logs.write(time.Now().Format("2006-01-02 15:04:05") + "  info  [hlsproxy] запуск " + version + ", mode=" + cfg.Mode + "\n")
 	go channels.janitor()
 
@@ -125,6 +135,7 @@ func newMux() http.Handler {
 	mux.HandleFunc("/playlist", playlistHandler)
 	mux.HandleFunc("/proxy", playlistHandler)
 	mux.HandleFunc("/pl/", savedHandler)
+	mux.HandleFunc("/subs/", subsHandler)
 	mux.HandleFunc("/seg/", segHandler)
 	mux.HandleFunc("/ts", legacyTSHandler)
 	mux.HandleFunc("/status", apiStatus)
@@ -209,10 +220,21 @@ func servePlaylist(w http.ResponseWriter, r *http.Request, src string, trusted b
 	switch detectKind(body) {
 	case kindMaster:
 		name := channels.nameOf(src)
-		writeM3U(w, rewriteMaster(body, base, cfg.AllVariants, func(u string) string {
+		var variants []string
+		out := rewriteMaster(body, base, cfg.AllVariants, func(u string) string {
 			channels.setName(u, name)
-			return wrap(u)
-		}))
+			variants = append(variants, u)
+			return wrap(u) + "&m=1"
+		})
+		// one video variant and subtitles wanted for it: add the subtitle rendition
+		if vid := ""; len(variants) > 0 {
+			last := variants[len(variants)-1]
+			vid = chanID(last)
+			if subsWanted(vid) && strings.Count(out, "#EXT-X-STREAM-INF") == 1 && !strings.Contains(out, "TYPE=SUBTITLES") {
+				out = injectSubs(out, baseURL(r), vid)
+			}
+		}
+		writeM3U(w, out)
 	case kindChannels:
 		names.noteList(src)
 		for u, n := range channelNames(body, base) {
@@ -238,6 +260,19 @@ func servePlaylist(w http.ResponseWriter, r *http.Request, src string, trusted b
 
 func serveChannel(c *channel, w http.ResponseWriter, r *http.Request) {
 	c.touch()
+	// subtitles: the player gets a master playlist with a subtitle rendition;
+	// the media itself is behind &m=1
+	if r.URL.Query().Get("m") == "" {
+		c.mu.Lock()
+		on := c.subs != nil && c.subs.on
+		bw := int(c.diag.BitrateMbps * 1.2e6)
+		src := c.srcURL
+		c.mu.Unlock()
+		if on {
+			writeM3U(w, subsMaster(baseURL(r), baseURL(r)+"/proxy?url="+url.QueryEscape(src)+"&m=1", c.id, bw))
+			return
+		}
+	}
 	select {
 	case <-c.startedCh:
 	case <-time.After(cfg.StartWait):

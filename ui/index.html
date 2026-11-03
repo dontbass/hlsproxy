@@ -526,6 +526,46 @@ function qualityCard(d) {
   return card;
 }
 
+function subsCard(d, live) {
+  const so = d.subs || {};
+  const card = h("div", { class: "card" }, h("h2", { text: "Субтитры (авто: Whisper → перевод)" }));
+  if (!so.available && !so.on) {
+    card.append(h("div", {}, statusBadge("info", so.why || "недоступно")),
+      h("div", { class: "muted", style: "font-size:12px;margin-top:6px", text: "Настраивается в LuCI → Службы → HLS Proxy → «Субтитры»: ключи Groq и DeepSeek, ffmpeg." }));
+    return card;
+  }
+  const row = h("div", { class: "btnrow" });
+  const st = so.on ? (so.last_error && so.last_error_ago_s < 60 ? statusBadge("warning", "ошибка: " + so.last_error) : statusBadge("good", "включены")) : statusBadge("info", "выключены для канала");
+  row.append(st);
+  if (live) {
+    const btn = h("button", { class: "btn" + (so.on ? "" : " primary"), text: so.on ? "Выключить" : "Включить для канала", onclick: async () => {
+      btn.disabled = true;
+      const r = await fetch("api/channel/" + d.id + "/subs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: !so.on }) });
+      if (!r.ok) alert(await r.text());
+      btn.disabled = false; refresh();
+    }});
+    row.append(btn);
+  }
+  card.append(row);
+  if (so.on || so.chunks) {
+    card.append(h("div", { class: "chips" },
+      h("span", { class: "chip", text: "язык эфира: " + (so.lang || "—") }),
+      h("span", { class: "chip", text: `готово впереди плеера: ${fmt(so.ahead_s)} с` }),
+      h("span", { class: "chip", text: `обработано: ${so.chunks} фрагм., ${fmt(so.asr_min, 1)} мин` }),
+      h("span", { class: "chip", text: `стоимость сеанса ≈ $${fmt(so.cost_usd, 3)}` })));
+    if (live && so.on) card.append(h("div", { class: "muted", style: "font-size:12px;margin-top:6px", text: "Если дорожки субтитров нет в плеере — переоткройте канал: она появляется при открытии." }));
+    const rc = so.recent || [];
+    if (rc.length) {
+      const list = h("div", { style: "margin-top:10px" });
+      for (const q of [...rc].sort((x, y) => y.t - x.t)) list.append(h("div", { class: "viewer", style: "grid-template-columns:64px 1fr" },
+        h("span", { class: "tm muted", style: "font-size:12px", text: clock(q.t) }),
+        h("div", {}, h("div", { style: "white-space:pre-line", text: q.text }), q.src !== q.text ? h("div", { class: "muted", style: "font-size:11px", text: q.src }) : null)));
+      card.append(h("div", { class: "sec", style: "font-size:12px;margin-top:10px", text: "Последние реплики" }), list);
+    }
+  }
+  return card;
+}
+
 function viewersCard(d) {
   const vs = d.viewers || [];
   const card = h("div", { class: "card" }, h("h2", { text: "Зрители и трафик" }));
@@ -681,6 +721,7 @@ function renderDetail() {
     root.append(mc);
   }
 
+  root.append(subsCard(d, live));
   root.append(viewersCard(d));
   // tiles
   const sx = d.stats;

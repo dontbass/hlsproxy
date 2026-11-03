@@ -20,6 +20,7 @@ type profile struct {
 	Verdict     string  `json:"verdict"`
 	Sessions    int     `json:"sessions"`
 	Manual      bool    `json:"manual,omitempty"`
+	Subs        *bool   `json:"subs,omitempty"` // subtitles on/off for this channel (nil = default)
 	Updated     string  `json:"updated"`
 }
 

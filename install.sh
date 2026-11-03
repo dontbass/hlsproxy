@@ -22,7 +22,7 @@ dl init.d/hlsproxy /etc/init.d/hlsproxy
 chmod +x /etc/init.d/hlsproxy
 if [ -f /etc/config/hlsproxy ]; then
 	# добавить новые опции, не трогая уже заданные
-	for kv in mode=auto max_delay=180 max_pause=40 log_dir=/tmp/hlsproxy-log wan_access=0 ext_ui=0; do
+	for kv in mode=auto max_delay=180 max_pause=40 log_dir=/tmp/hlsproxy-log wan_access=0 ext_ui=0 subs=0 subs_default=0 subs_lang=ru; do
 		k=${kv%%=*}; v=${kv#*=}
 		[ -n "$(uci -q get hlsproxy.main.$k)" ] || uci set hlsproxy.main.$k="$v"
 	done

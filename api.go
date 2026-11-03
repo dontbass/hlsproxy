@@ -47,6 +47,7 @@ type chanSummary struct {
 	UpstreamMB  float64     `json:"upstream_mb"`
 	ServedMB    float64     `json:"served_mb"`
 	ProvWinS    float64     `json:"prov_window_s"`
+	Subs        subsOut     `json:"subs"`
 }
 
 func (c *channel) summary() chanSummary {
@@ -60,7 +61,7 @@ func (c *channel) summary() chanSummary {
 		ClientBuf: round1(c.clBuf), ClientPlay: c.clPlaying,
 		Holding: c.holding, Stall: c.stallActive,
 		Delay: c.delay, Conc: c.conc, Stats: c.stats, Diag: c.diag,
-		Quality: c.qual, Viewers: c.viewerList(), ProvWinS: round1(c.provWin),
+		Quality: c.qual, Viewers: c.viewerList(), ProvWinS: round1(c.provWin), Subs: c.subsSummary(),
 		UpstreamMB: round1(float64(c.stats.Bytes) / 1e6), ServedMB: round1(float64(c.served) / 1e6),
 	}
 	st.Stats.EdgeStallS = round1(st.Stats.EdgeStallS)
@@ -200,6 +201,38 @@ func apiChannel(w http.ResponseWriter, r *http.Request) {
 		profiles.put(id, p)
 		profiles.flush()
 		writeJSON(w, p)
+
+	case "subs":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			On bool `json:"on"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if ok, why := subsAvailable(); req.On && !ok {
+			http.Error(w, why, http.StatusConflict)
+			return
+		}
+		p := profiles.get(id)
+		if p == nil {
+			p = &profile{}
+		}
+		on := req.On
+		p.Subs = &on
+		if c != nil {
+			c.mu.Lock()
+			p.Name, p.Source = c.name, shortURL(c.srcURL)
+			c.setSubs(on)
+			c.mu.Unlock()
+		}
+		profiles.put(id, p)
+		profiles.flush()
+		writeJSON(w, map[string]bool{"on": on})
 
 	case "forget":
 		if r.Method != http.MethodPost {

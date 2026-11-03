@@ -34,6 +34,29 @@ uci:foreach("hlsproxy", "playlist", function(sec)
 	local id = (sec[".name"] or ""):gsub("^pl_", "")
 	if id:match("^%x+$") and sec.url then playlists[#playlists + 1] = { id = id, name = sec.name or id, url = sec.url } end
 end)
+local subs_msg = nil
+if http.formvalue("hp_subs") then
+	uci:set("hlsproxy", "main", "subs", http.formvalue("subs") and "1" or "0")
+	uci:set("hlsproxy", "main", "subs_default", http.formvalue("subs_default") and "1" or "0")
+	local lang = http.formvalue("subs_lang")
+	if lang == "ru" or lang == "en" or lang == "uk" then uci:set("hlsproxy", "main", "subs_lang", lang) end
+	local px = (http.formvalue("subs_proxy") or ""):gsub("%s", "")
+	if px == "" or px:match("^[%w]+://[%w%.%-%[%]:@_]+$") then uci:set("hlsproxy", "main", "subs_proxy", px) end
+	for _, k in ipairs({ "asr_key", "llm_key" }) do
+		local v = (http.formvalue(k) or ""):gsub("%s", "")
+		if v ~= "" then uci:set("hlsproxy", "main", k, v) end
+		if http.formvalue(k .. "_clear") then uci:set("hlsproxy", "main", k, "") end
+	end
+	uci:commit("hlsproxy")
+	sys.call("/etc/init.d/hlsproxy restart >/dev/null 2>&1")
+	subs_msg = "Сохранено, служба перезапущена."
+end
+if http.formvalue("hp_ffmpeg") then
+	sys.call("(if command -v apk >/dev/null; then apk update && apk add ffmpeg; else opkg update && opkg install ffmpeg; fi) >/tmp/hlsproxy-ffmpeg.log 2>&1 &")
+	subs_msg = "Установка ffmpeg запущена в фоне (1–3 мин). Обновите страницу позже."
+end
+local has_ffmpeg = sys.call("command -v ffmpeg >/dev/null 2>&1") == 0
+local function masked(k) local v = uci:get("hlsproxy", "main", k) or ""; if v == "" then return "не задан" end; return "задан: …" .. v:sub(-4) end
 if http.formvalue("hp_ext") then
 	uci:set("hlsproxy", "main", "wan_access", http.formvalue("wan_access") and "1" or "0")
 	uci:set("hlsproxy", "main", "ext_ui", http.formvalue("ext_ui") and "1" or "0")
@@ -127,6 +150,42 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="ext_host" value="<%=pcdata(wan_ip)%><%= wan_ip ~= '' and (':' .. port) or '' %>" placeholder="белый-ip:<%=port%> или домен:<%=port%>"></div></div>
 	<div class="cbi-value"><label class="cbi-value-title"></label>
 		<div class="cbi-value-field"><input type="submit" class="cbi-button cbi-button-save" value="Сохранить доступ"></div></div>
+</fieldset></div>
+</form>
+
+<form method="post" action="<%=REQUEST_URI%>">
+<input type="hidden" name="token" value="<%=token%>">
+<input type="hidden" name="hp_subs" value="1">
+<div class="cbi-section"><h3>Субтитры (авто)</h3><fieldset class="cbi-section-node">
+	<div class="cbi-map-descr">Речь распознаётся Whisper (Groq, whisper-large-v3-turbo, ≈ $0,04 за час эфира) и переводится DeepSeek. Работает только пока канал смотрят и только на каналах, где субтитры включены в панели. Дорожка «Русский (авто)» появляется в плеере при открытии канала.</div>
+	<% if subs_msg then %><div class="alert-message"><%=pcdata(subs_msg)%></div><% end %>
+	<div class="cbi-value"><label class="cbi-value-title">ffmpeg на роутере</label>
+		<div class="cbi-value-field"><% if has_ffmpeg then %><b>установлен</b><% else %><b>не установлен</b> — нужен для извлечения звука
+		<input type="submit" name="hp_ffmpeg" class="cbi-button cbi-button-action" value="Установить ffmpeg" style="margin-left:8px"><% end %></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Включить субтитры</label>
+		<div class="cbi-value-field"><input type="checkbox" name="subs" value="1" <%=(get('subs','0')=='1') and 'checked' or ''%>></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Для всех каналов</label>
+		<div class="cbi-value-field"><input type="checkbox" name="subs_default" value="1" <%=(get('subs_default','0')=='1') and 'checked' or ''%>>
+		<div class="cbi-value-description">Выключено — субтитры включаются кнопкой на нужном канале в панели (рекомендуется: платите только за нужные каналы).</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Язык субтитров</label>
+		<div class="cbi-value-field"><select name="subs_lang" class="cbi-input-select">
+			<option value="ru" <%=(get('subs_lang','ru')=='ru') and 'selected' or ''%>>Русский (перевод)</option>
+			<option value="uk" <%=(get('subs_lang','ru')=='uk') and 'selected' or ''%>>Українська (перевод)</option>
+			<option value="en" <%=(get('subs_lang','ru')=='en') and 'selected' or ''%>>English (без перевода, DeepSeek не нужен)</option>
+		</select></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Ключ Groq</label>
+		<div class="cbi-value-field"><input type="password" name="asr_key" class="cbi-input-text" autocomplete="off" placeholder="gsk_… (<%=masked('asr_key')%>)">
+		<label style="margin-left:8px"><input type="checkbox" name="asr_key_clear" value="1"> удалить</label>
+		<div class="cbi-value-description">console.groq.com → API Keys. Пустое поле — оставить текущий.</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Ключ DeepSeek</label>
+		<div class="cbi-value-field"><input type="password" name="llm_key" class="cbi-input-text" autocomplete="off" placeholder="sk-… (<%=masked('llm_key')%>)">
+		<label style="margin-left:8px"><input type="checkbox" name="llm_key_clear" value="1"> удалить</label>
+		<div class="cbi-value-description">platform.deepseek.com → API keys.</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Прокси до API</label>
+		<div class="cbi-value-field"><input type="text" name="subs_proxy" class="cbi-input-text" value="<%=pcdata(get('subs_proxy',''))%>" placeholder="socks5://адрес:порт или http://…">
+		<div class="cbi-value-description">Если Groq/DeepSeek недоступны напрямую — через свой VPS. Пусто — напрямую.</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"></label>
+		<div class="cbi-value-field"><input type="submit" class="cbi-button cbi-button-save" value="Сохранить субтитры"></div></div>
 </fieldset></div>
 </form>
 

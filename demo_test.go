@@ -25,6 +25,17 @@ func TestDemo(t *testing.T) {
 	os.RemoveAll(cfg.LogDir)
 	logs.init(cfg.LogDir)
 	names.load(t.TempDir() + "/names.json")
+	if os.Getenv("DEMO_SUBS") != "" {
+		asr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"language":"english","segments":[{"start":1.0,"end":4.2,"text":" Welcome back to the evening news."},{"start":5.0,"end":9.5,"text":" Tonight we look at the weather across the country."},{"start":12,"end":16,"text":" Stay with us after the break."}]}`))
+		}))
+		llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"choices":[{"message":{"content":"{\"lines\":[\"С возвращением в вечерние новости.\",\"Сегодня — о погоде по всей стране.\",\"Оставайтесь с нами после рекламы.\"]}"}}],"usage":{"prompt_tokens":120,"completion_tokens":60}}`))
+		}))
+		cfg.Subs = subsConfig{Enabled: true, Default: true, Lang: "ru", ASRURL: asr.URL, ASRModel: "whisper-large-v3-turbo", LLMURL: llm.URL, LLMModel: "deepseek-chat", ChunkSec: 20}
+		initSubs()
+		cfg.Subs.ASRKey, cfg.Subs.LLMKey = "k", "k"
+	}
 	up := &fakeUpstream{t0: time.Now(), rnd: rand.New(rand.NewSource(3))}
 	us := httptest.NewServer(up)
 	defer us.Close()

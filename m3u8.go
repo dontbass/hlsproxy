@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -254,4 +255,22 @@ func channelNames(body string, base *url.URL) map[string]string {
 		}
 	}
 	return out
+}
+
+// injectSubs adds a subtitle rendition to a single-variant master playlist.
+func injectSubs(master, base, id string) string {
+	name := map[string]string{"ru": "Русский (авто)", "en": "English (auto)"}[cfg.Subs.Lang]
+	if name == "" {
+		name = cfg.Subs.Lang + " (auto)"
+	}
+	media := fmt.Sprintf("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"%s\",LANGUAGE=\"%s\",DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI=\"%s/subs/%s/index.m3u8\"", name, cfg.Subs.Lang, base, id)
+	var b strings.Builder
+	for _, l := range lines(master) {
+		if strings.HasPrefix(l, "#EXT-X-STREAM-INF") {
+			b.WriteString(media + "\n")
+			l += ",SUBTITLES=\"subs\""
+		}
+		b.WriteString(l + "\n")
+	}
+	return b.String()
 }

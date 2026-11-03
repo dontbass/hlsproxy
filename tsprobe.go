@@ -14,19 +14,20 @@ import (
 //   - скачок DTS на стыке с предыдущим сегментом;
 //   - сегмент по таймстемпам короче заявленного EXTINF.
 type tsInfo struct {
-	OK       bool    // разобран как TS
-	HasVideo bool    //
-	Packets  int     //
-	SyncErr  int     // потеря синхробайта
-	CCErr    int     // разрывы continuity counter (видео+аудио)
-	Frames   int     // видео PES
-	FirstDTS int64   // 90 кГц, -1 если нет
-	LastDTS  int64   //
-	FrameDur float64 // с, медиана шага DTS
-	MaxGap   float64 // с, наибольшая дыра сверх нормального шага кадра
-	Backs    int     // DTS шёл назад
-	Span     float64 // с, длительность по таймстемпам
-	Video    *videoInfo
+	OK        bool    // разобран как TS
+	HasVideo  bool    //
+	Packets   int     //
+	SyncErr   int     // потеря синхробайта
+	CCErr     int     // разрывы continuity counter (видео+аудио)
+	Frames    int     // видео PES
+	FirstDTS  int64   // 90 кГц, -1 если нет
+	LastDTS   int64   //
+	FrameDur  float64 // с, медиана шага DTS
+	MaxGap    float64 // с, наибольшая дыра сверх нормального шага кадра
+	Backs     int     // DTS шёл назад
+	Span      float64 // с, длительность по таймстемпам
+	Video     *videoInfo
+	FirstPTSA int64 // first audio PTS (90 kHz), -1 if none — anchor for subtitles
 }
 
 type tsState struct {
@@ -74,7 +75,7 @@ func isAudioType(t byte) bool {
 
 // probeTS scans a segment file. st carries PIDs between segments (PMT may be absent).
 func probeTS(path string, st *tsState) tsInfo {
-	info := tsInfo{FirstDTS: -1, LastDTS: -1}
+	info := tsInfo{FirstDTS: -1, LastDTS: -1, FirstPTSA: -1}
 	f, err := os.Open(path)
 	if err != nil {
 		return info
@@ -169,6 +170,10 @@ func probeTS(path string, st *tsState) tsInfo {
 				if a > 0 {
 					st.audioPID, st.audio, st.tracks = a, an, tracks
 				}
+			}
+		case pid == st.audioPID && st.audioPID > 0 && pusi && info.FirstPTSA < 0 && len(pl) >= 14 && pl[0] == 0 && pl[1] == 0 && pl[2] == 1:
+			if pl[7]>>6 >= 2 {
+				info.FirstPTSA = readTS33(pl[9:14])
 			}
 		case pid == st.videoPID && st.videoPID > 0 && !pusi:
 			if len(es) > 0 && len(es) < esLimit {

@@ -62,7 +62,7 @@ func isRouterIP(ip net.IP) bool {
 // The panel and API stay LAN-only unless ext_ui is enabled.
 func externalPathAllowed(p string) bool {
 	switch {
-	case p == "/playlist", p == "/proxy", strings.HasPrefix(p, "/seg/"), strings.HasPrefix(p, "/pl/"):
+	case p == "/playlist", p == "/proxy", strings.HasPrefix(p, "/seg/"), strings.HasPrefix(p, "/pl/"), strings.HasPrefix(p, "/subs/"):
 		return true
 	case cfg.ExtUI && (p == "/ui" || p == "/" || strings.HasPrefix(p, "/api/") || p == "/status"):
 		return true
