@@ -57,6 +57,7 @@ type seg struct {
 	size       int64
 	path       string
 	lastErr    string
+	ts         *tsInfo
 	done       chan struct{} // closed on ready/failed
 }
 
@@ -73,6 +74,32 @@ type segRec struct {
 	Failed   bool    `json:"failed,omitempty"`
 	Gap      bool    `json:"gap,omitempty"`  // lost at provider before we saw it
 	Init     bool    `json:"init,omitempty"` // from the start window: Q not meaningful
+	// stream health (MPEG-TS analysis)
+	CC      int     `json:"cc,omitempty"`       // lost TS packets
+	TsGap   float64 `json:"ts_gap,omitempty"`   // s, missing frames inside
+	TsShort float64 `json:"ts_short,omitempty"` // s, shorter than EXTINF
+	TsJump  float64 `json:"ts_jump,omitempty"`  // s, timestamp jump at the boundary
+	Bad     bool    `json:"bad,omitempty"`
+}
+
+// clRec: one segment delivery router -> player.
+type clRec struct {
+	T       float64 `json:"t"`  // finished, s since T0
+	ID      int64   `json:"id"` //
+	KB      int64   `json:"kb"`
+	Sec     float64 `json:"sec"`  // serve time (without auto-pause wait)
+	X       float64 `json:"x"`    // segment duration / serve time
+	Mbps    float64 `json:"mbps"` // delivery speed
+	Held    float64 `json:"held,omitempty"`
+	Aborted bool    `json:"aborted,omitempty"`
+}
+
+type mark struct {
+	T       float64  `json:"t"`
+	At      string   `json:"at"`
+	Level   string   `json:"level"`
+	Summary string   `json:"summary"`
+	Causes  []string `json:"causes"`
 }
 
 type sample struct {
@@ -159,6 +186,16 @@ type channel struct {
 	clLastSeg  int64
 	clLastSegT time.Time
 
+	// stream / delivery
+	tsSt      tsState
+	prevTS    *tsInfo
+	prevTSID  int64
+	lastBadEv time.Time
+	cl        []clRec
+	lastPoll  time.Time
+	marks     []mark
+	lastSave  time.Time
+
 	// telemetry
 	recs     []segRec
 	samples  []sample
@@ -189,11 +226,14 @@ type chanStats struct {
 	PollErrors int64
 	Resets     int64
 	ClientRest int64
+	Defects    int64 // segments with stream defects
+	PollGaps   int64 // long pauses in player's playlist polling
+	ClAborted  int64 // player aborted a segment download
 }
 
 const (
 	maxRecs    = 900
-	maxSamples = 900
+	maxSamples = 3600 // 1 h at 1/s
 	maxEvents  = 150
 )
 
@@ -331,6 +371,8 @@ func (r *registry) remove(c *channel) {
 	c.cancel()
 	c.mu.Lock()
 	c.saveProfile(true)
+	c.addEvent("info", "канал остановлен")
+	c.saveSession(true)
 	c.mu.Unlock()
 	os.RemoveAll(c.dir())
 }
@@ -372,6 +414,7 @@ func (c *channel) addEvent(kind, text string) {
 	if len(c.events) > maxEvents {
 		c.events = c.events[len(c.events)-maxEvents:]
 	}
+	logs.event(c, c.events[len(c.events)-1])
 	if kind != "info" {
 		log.Printf("[%s] %s", c.id, text)
 	}
@@ -651,6 +694,17 @@ func (c *channel) download(s *seg) {
 	c.mu.Unlock()
 	attemptCap := time.Duration(math.Max(30, 4*dur) * float64(time.Second))
 	n, err := fetchToFile(c.ctx, s.uri, c.ua, s.path, cfg.IdleRead, attemptCap)
+	var ti *tsInfo
+	if err == nil && s.ext == ".ts" {
+		c.mu.Lock()
+		st := c.tsSt
+		c.mu.Unlock()
+		info := probeTS(s.path, &st)
+		ti = &info
+		c.mu.Lock()
+		c.tsSt = st
+		c.mu.Unlock()
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -699,7 +753,72 @@ func (c *channel) download(s *seg) {
 	if el > 0.01 {
 		r.X = round2(s.dur / el)
 	}
+	if ti != nil && ti.OK && ti.HasVideo {
+		s.ts = ti
+		r.CC = ti.CCErr
+		r.TsGap = round2(ti.MaxGap)
+		if short := s.dur - ti.Span; short > 0.5 && ti.Frames > 2 {
+			r.TsShort = round2(short)
+		}
+		r.Bad = r.CC > 0 || r.TsGap > 0 || r.TsShort > 0
+	}
 	c.addRec(r)
+	if r.Bad {
+		c.noteDefect(s.id, describeDefect(r))
+	}
+}
+
+func describeDefect(r segRec) string {
+	var p []string
+	if r.CC > 0 {
+		p = append(p, fmt.Sprintf("потеряно TS-пакетов: %d", r.CC))
+	}
+	if r.TsGap > 0 {
+		p = append(p, fmt.Sprintf("дыра в кадрах %.2f с", r.TsGap))
+	}
+	if r.TsShort > 0 {
+		p = append(p, fmt.Sprintf("по таймстемпам короче на %.2f с", r.TsShort))
+	}
+	if r.TsJump != 0 {
+		p = append(p, fmt.Sprintf("скачок времени на стыке %+.2f с", r.TsJump))
+	}
+	return strings.Join(p, ", ")
+}
+
+func (c *channel) noteDefect(id int64, what string) {
+	c.stats.Defects++
+	if time.Since(c.lastBadEv) < 10*time.Second {
+		return
+	}
+	c.lastBadEv = time.Now()
+	c.addEvent("crit", fmt.Sprintf("дефект в потоке провайдера, сегм. %d: %s. Буфер это не исправит (напрямую будет так же)", id, what))
+}
+
+func (c *channel) recByID(id int64) *segRec {
+	for i := len(c.recs) - 1; i >= 0 && i >= len(c.recs)-200; i-- {
+		if c.recs[i].ID == id {
+			return &c.recs[i]
+		}
+	}
+	return nil
+}
+
+func (c *channel) addCl(r clRec) {
+	c.cl = append(c.cl, r)
+	if len(c.cl) > maxRecs {
+		c.cl = c.cl[len(c.cl)-maxRecs:]
+	}
+}
+
+func (c *channel) notePoll(now time.Time) {
+	if !c.lastPoll.IsZero() && c.started {
+		gap := now.Sub(c.lastPoll).Seconds()
+		if gap > math.Max(3*c.targetDur, 15) && gap < cfg.Idle.Seconds() {
+			c.stats.PollGaps++
+			c.addEvent("warn", fmt.Sprintf("плеер %.0f с не запрашивал плейлист (пауза, свёрнутое приложение или ошибка/перезапуск плеера)", gap))
+		}
+	}
+	c.lastPoll = now
 }
 
 // ---------------------------------------------------------------- edge
@@ -713,6 +832,21 @@ func (c *channel) expose(s *seg, now time.Time) {
 	c.lastExp = now
 	if c.clStarted {
 		c.clBuf += s.dur
+	}
+	if s.ts != nil {
+		if p := c.prevTS; p != nil && s.id == c.prevTSID+1 && !s.disc && p.LastDTS >= 0 && s.ts.FirstDTS >= 0 {
+			jump := float64(tsDelta(p.LastDTS, s.ts.FirstDTS))/90000 - p.FrameDur
+			if math.Abs(jump) > 0.5 {
+				if r := c.recByID(s.id); r != nil {
+					r.TsJump = round2(jump)
+					r.Bad = true
+					c.noteDefect(s.id, describeDefect(*r))
+				}
+			}
+		}
+		c.prevTS, c.prevTSID = s.ts, s.id
+	} else {
+		c.prevTS = nil
 	}
 }
 
@@ -962,6 +1096,9 @@ func (c *channel) tick(now time.Time) {
 			c.samples = c.samples[len(c.samples)-maxSamples:]
 		}
 		c.autoTune(now)
+		if now.Sub(c.lastSave) > 5*time.Minute && c.started {
+			c.saveSession(false)
+		}
 	}
 }
 

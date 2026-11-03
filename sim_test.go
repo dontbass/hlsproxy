@@ -137,7 +137,25 @@ func (u *fakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var simTS = func() [][]byte {
+	dir := os.Getenv("SIM_TS_DIR")
+	if dir == "" {
+		return nil
+	}
+	var out [][]byte
+	for i := 0; ; i++ {
+		b, err := os.ReadFile(fmt.Sprintf("%s/s%d.ts", dir, i))
+		if err != nil {
+			return out
+		}
+		out = append(out, b)
+	}
+}()
+
 func simBody(n int64) []byte {
+	if len(simTS) > 0 {
+		return simTS[int(n)%len(simTS)]
+	}
 	b := make([]byte, simSegSize)
 	for i := range b {
 		b[i] = 0x47
@@ -223,7 +241,9 @@ func simPlayer(t *testing.T, plURL string, dur time.Duration) simResult {
 				if err != nil || resp.StatusCode != 200 {
 					continue // retry same seq
 				}
-				if len(body) != simSegSize {
+				if len(simTS) > 0 {
+					// real TS from SIM_TS_DIR: no synthetic content check
+				} else if len(body) != simSegSize {
 					res.corrupt++
 				} else {
 					c, _ := strconv.ParseInt(string(body[4:16]), 10, 64)

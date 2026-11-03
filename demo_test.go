@@ -19,9 +19,11 @@ func TestDemo(t *testing.T) {
 	cfg = config{
 		CacheDir: t.TempDir(), Delay: 4 * time.Second, MaxDelay: 60 * time.Second,
 		StartSegs: 3, Window: 8, Concurrency: 2, Idle: 60 * time.Second, IdleRead: 1500 * time.Millisecond,
-		MaxAttempts: 8, MaxBurstSegs: 4, StartWait: 7 * time.Second, MaxHold: 8 * time.Second, Mode: "auto",
+		MaxAttempts: 8, MaxBurstSegs: 4, StartWait: 7 * time.Second, MaxHold: 8 * time.Second, Mode: "auto", LogDir: "/tmp/demolog",
 	}
 	profiles.load(t.TempDir() + "/p.json")
+	os.RemoveAll(cfg.LogDir)
+	logs.init(cfg.LogDir)
 	up := &fakeUpstream{t0: time.Now(), rnd: rand.New(rand.NewSource(3))}
 	us := httptest.NewServer(up)
 	defer us.Close()

@@ -83,6 +83,14 @@ table.data th { color: var(--text-secondary); font-weight: 500; }
 details summary { cursor: pointer; color: var(--text-secondary); }
 .empty { padding: 40px; text-align: center; color: var(--text-secondary); }
 .stale { opacity: .55; transition: opacity .2s; }
+.marks .mk { padding: 8px 0; border-bottom: 1px solid var(--grid); }
+.marks .mk:last-child { border-bottom: 0; }
+.btnrow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.banner { background: var(--surface-2); border-radius: 8px; padding: 8px 12px; color: var(--text-secondary); }
+.sess { cursor: pointer; text-align: left; font: inherit; color: inherit; width: 100%; padding: 8px 10px; }
+.sess[aria-current="true"] { outline: 2px solid var(--series-1); outline-offset: -1px; }
+.side-h { font-size: 12px; color: var(--text-secondary); margin: 10px 2px 2px; display: flex; justify-content: space-between; }
+a { color: var(--series-1); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 1200px) { .grid2 { grid-template-columns: 1fr; } }
 </style>
@@ -93,6 +101,7 @@ details summary { cursor: pointer; color: var(--text-secondary); }
     <h1>HLS Proxy · анти-фриз</h1>
     <span class="pill" id="ver">…</span>
     <span class="pill" id="mode">…</span>
+    <a href="api/log?n=1000" target="_blank" rel="noopener">журнал событий</a>
     <span class="muted" id="conn"></span>
   </div>
   <div class="layout">
@@ -107,8 +116,9 @@ details summary { cursor: pointer; color: var(--text-secondary); }
 const $ = (s, el = document) => el.querySelector(s);
 const NS = "http://www.w3.org/2000/svg";
 const LV = { good: ["✓", "lv-good"], warning: ["!", "lv-warning"], serious: ["!", "lv-serious"], critical: ["×", "lv-critical"], info: ["i", "lv-info"] };
+const EK = { info: "info", warn: "warning", crit: "critical", tune: "good", mark: "serious" };
 const MODES = { auto: "режим: авто-подстройка", advise: "режим: только советы", off: "режим: фиксированные параметры" };
-let state = { sel: null, status: null, detail: null, busy: false };
+let state = { sel: null, status: null, detail: null, busy: false, view: "live", sessFile: null, sessions: [], sessAt: 0 };
 
 function h(tag, attrs = {}, ...kids) {
   const el = document.createElement(tag);
@@ -131,7 +141,7 @@ function statusBadge(level, label) {
 const fmt = (v, d = 0) => (v == null || isNaN(v)) ? "—" : Number(v).toLocaleString("ru-RU", { maximumFractionDigits: d, minimumFractionDigits: d });
 function clock(t) { // t: seconds since channel T0
   const d = state.detail; if (!d) return "";
-  const ms = Date.now() - (d.now_t - t) * 1000;
+  const ms = (d.t0_unix + t) * 1000;
   return new Date(ms).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 function css(v) { return getComputedStyle($(".viz-root")).getPropertyValue(v).trim(); }
@@ -225,6 +235,12 @@ function reserveChart(el, d) {
     const last = sm[sm.length - 1];
     f.svg.append(s("circle", { cx: x(last.t), cy: f.y(Math.min(last[sr.key], yMax)), r: 4, fill: sr.color, stroke: css("--surface-1"), "stroke-width": 2 }));
   }
+  for (const mk of d.marks || []) {
+    if (mk.t < x0 || mk.t > x1) continue;
+    f.svg.append(s("line", { x1: x(mk.t), x2: x(mk.t), y1: f.m.t, y2: f.m.t + f.ih, stroke: css("--text-primary"), "stroke-width": 1 }));
+    const lt = s("text", { x: x(mk.t) + 4, y: f.m.t + 12, "font-size": 11, fill: css("--text-primary") });
+    lt.textContent = "фриз " + mk.at; f.svg.append(lt);
+  }
   xTicks(f, x0, x1, x);
   // crosshair
   const cross = s("line", { y1: f.m.t, y2: f.m.t + f.ih, stroke: css("--axis"), "stroke-width": 1, visibility: "hidden" });
@@ -273,7 +289,7 @@ function latenessChart(el, d) {
       const top = f.y(Math.min(v, yMax)), hgt = Math.max(1, f.m.t + f.ih - top);
       const rr = Math.min(4, bw / 2, hgt);
       const x0 = cx - bw / 2, x1 = cx + bw / 2, yb = f.m.t + f.ih;
-      el2 = s("path", { d: `M${x0} ${yb} V${top + rr} Q${x0} ${top} ${x0 + rr} ${top} H${x1 - rr} Q${x1} ${top} ${x1} ${top + rr} V${yb} Z`, fill: over ? css("--critical") : css("--series-1") });
+      el2 = s("path", { d: `M${x0} ${yb} V${top + rr} Q${x0} ${top} ${x0 + rr} ${top} H${x1 - rr} Q${x1} ${top} ${x1} ${top + rr} V${yb} Z`, fill: over ? css("--critical") : r.bad ? css("--serious") : css("--series-1") });
     }
     const hit = s("rect", { x: cx - slot / 2, y: f.m.t, width: slot, height: f.ih, fill: "transparent" });
     hit.addEventListener("pointermove", ev => {
@@ -281,6 +297,7 @@ function latenessChart(el, d) {
         : [{ name: "Опоздание", value: fmt(r.q - qmin, 1) + " с" }, { name: "Скорость", value: "×" + fmt(r.x, 2) },
            { name: "Ожидание старта", value: fmt(r.wait, 1) + " с" }, { name: "Битрейт", value: fmt(r.mbps, 1) + " Мбит/с" },
            { name: "Попыток", value: String(r.tries) }];
+      if (r.bad) rows.push({ name: "Дефект потока", value: [r.cc ? "потеряно пакетов " + r.cc : "", r.ts_gap ? "дыра " + fmt(r.ts_gap, 2) + " с" : "", r.ts_short ? "короче на " + fmt(r.ts_short, 2) + " с" : "", r.ts_jump ? "скачок " + fmt(r.ts_jump, 2) + " с" : ""].filter(Boolean).join(", ") });
       showTip(ev, clock(r.t) + (r.id >= 0 ? " · сегм. " + r.id : ""), rows);
     });
     hit.addEventListener("pointerleave", hideTip);
@@ -290,39 +307,47 @@ function latenessChart(el, d) {
   const lg = h("div", { class: "legend" },
     h("span", {}, h("span", { class: "key-rect", style: "background:" + css("--series-1") }), "опоздание сегмента (укладывается в защиту)"),
     h("span", {}, statusBadge("critical", "превысило защиту → фриз")),
+    h("span", {}, statusBadge("serious", "дефект в потоке провайдера")),
     h("span", {}, h("span", { class: "key-rect", style: "background:" + css("--wash-critical") }), "сегмент потерян"));
   el.append(lg, f.svg);
 }
 
-// ---------- download speed vs realtime
+// ---------- speed: provider -> router and router -> TV, × realtime
 function speedChart(el, d) {
   el.replaceChildren();
-  const recs = d.segments.filter(r => !r.failed && r.x > 0).slice(-150);
-  if (recs.length < 2) { el.append(h("div", { class: "muted", text: "Нужно несколько сегментов" })); return; }
-  const yMax = niceMax(Math.max(2, ...recs.map(r => Math.min(r.x, 20))) * 1.05);
+  const prov = d.segments.filter(r => !r.failed && r.x > 0).slice(-150);
+  const lan = (d.client || []).filter(r => !r.aborted && r.x > 0 && r.kb >= 64).slice(-150);
+  const abr = (d.client || []).filter(r => r.aborted).slice(-50);
+  if (prov.length < 2) { el.append(h("div", { class: "muted", text: "Нужно несколько сегментов" })); return; }
+  const all = prov.concat(lan);
+  const x0 = Math.min(...all.map(r => r.t)), x1 = Math.max(...all.map(r => r.t));
+  const yMax = niceMax(Math.max(2, ...all.map(r => Math.min(r.x, 20))) * 1.05);
   const f = frame(el, 200, yMax, "×");
-  const x0 = recs[0].t, x1 = recs[recs.length - 1].t;
   const x = t => f.m.l + (t - x0) / Math.max(1, x1 - x0) * f.iw;
   const y1 = f.y(1);
   f.svg.append(s("line", { x1: f.m.l, x2: f.W - f.m.r, y1: y1, y2: y1, stroke: css("--critical"), "stroke-width": 1 }));
-  const col = css("--series-1");
-  for (const r of recs) {
+  const series = [
+    { name: "провайдер → роутер", color: css("--series-1"), pts: prov, tip: r => [{ name: "Размер", value: fmt(r.kb / 1024, 1) + " МБ" }, { name: "Попыток", value: String(r.tries) }] },
+    { name: "роутер → ТВ", color: css("--series-2"), pts: lan, tip: r => [{ name: "Скорость", value: fmt(r.mbps) + " Мбит/с" }, { name: "Отдача", value: fmt(r.sec, 1) + " с" }] },
+  ];
+  for (const sr of series) for (const r of sr.pts) {
     const cy = f.y(Math.min(r.x, yMax));
-    const dot = s("circle", { cx: x(r.t), cy, r: 4, fill: r.x < 1 ? css("--critical") : col, stroke: css("--surface-1"), "stroke-width": 2 });
+    const dot = s("circle", { cx: x(r.t), cy, r: 4, fill: sr.color, stroke: css("--surface-1"), "stroke-width": 2 });
     const hit = s("circle", { cx: x(r.t), cy, r: 12, fill: "transparent" });
-    hit.addEventListener("pointermove", ev => showTip(ev, clock(r.t) + " · сегм. " + r.id, [
-      { name: "× реалтайм", value: "×" + fmt(r.x, 2), color: col }, { name: "Размер", value: fmt(r.kb / 1024, 1) + " МБ" },
-      { name: "Попыток", value: String(r.tries) }]));
+    hit.addEventListener("pointermove", ev => showTip(ev, clock(r.t) + " · сегм. " + r.id, [{ name: sr.name, value: "×" + fmt(r.x, 2), color: sr.color }, ...sr.tip(r)]));
     hit.addEventListener("pointerleave", hideTip);
     f.svg.append(dot, hit);
   }
-  const lg = h("div", { class: "legend" },
-    h("span", {}, h("span", { class: "key-rect", style: "border-radius:50%;background:" + col }), "сегмент"),
-    h("span", {}, h("span", { class: "key-line", style: "background:" + css("--critical") }), "×1 — скачался ровно за время своего воспроизведения"),
-    h("span", {}, statusBadge("critical", "медленнее воспроизведения")));
-  el.append(lg);
+  for (const r of abr) {
+    const xx = x(Math.min(Math.max(r.t, x0), x1));
+    f.svg.append(s("line", { x1: xx, x2: xx, y1: f.m.t + f.ih - 10, y2: f.m.t + f.ih, stroke: css("--critical"), "stroke-width": 2 }));
+  }
   xTicks(f, x0, x1, x);
-  el.append(f.svg);
+  const lg = h("div", { class: "legend" });
+  for (const sr of series) lg.append(h("span", {}, h("span", { class: "key-rect", style: "border-radius:50%;background:" + sr.color }), sr.name));
+  lg.append(h("span", {}, h("span", { class: "key-line", style: "background:" + css("--critical") }), "×1: передача заняла всю длительность сегмента"));
+  if (abr.length) lg.append(h("span", {}, statusBadge("critical", "плеер оборвал загрузку")));
+  el.append(lg, f.svg);
 }
 
 // ---------- protection meter
@@ -354,34 +379,81 @@ function tile(lb, vl, sub) { return h("div", { class: "card tile" }, h("div", { 
 
 function renderList() {
   const st = state.status, list = $("#list");
-  list.replaceChildren();
-  if (!st || !st.channels.length) { list.append(h("div", { class: "card muted", text: "Каналов нет" })); return; }
-  if (!state.sel || !st.channels.find(c => c.id === state.sel)) state.sel = st.channels[0].id;
-  for (const c of st.channels) {
-    const b = h("button", { class: "card ch", "aria-current": String(c.id === state.sel), onclick: () => { state.sel = c.id; state.detail = null; renderList(); refresh(); } },
-      h("div", { class: "nm", text: c.name, title: c.source }),
-      statusBadge(c.diag.level, c.diag.title),
-      h("div", { class: "muted", style: "font-size:12px;margin-top:4px", text:
-        `защита ${fmt(c.diag.have_s)} с · нужно ${fmt(c.diag.need_s)} с · фризов ${c.stats.Freezes}` + (c.idle_s > 15 ? " · не смотрят" : "") }));
-    list.append(b);
+  list.replaceChildren(h("div", { class: "side-h" }, h("span", { text: "Сейчас смотрят" })));
+  if (!st || !st.channels.length) list.append(h("div", { class: "card muted", text: "Активных каналов нет" }));
+  else {
+    if (state.view === "live" && (!state.sel || !st.channels.find(c => c.id === state.sel))) state.sel = st.channels[0].id;
+    for (const c of st.channels) {
+      list.append(h("button", { class: "card ch", "aria-current": String(state.view === "live" && c.id === state.sel),
+        onclick: () => { state.view = "live"; state.sel = c.id; state.detail = null; renderList(); refresh(); } },
+        h("div", { class: "nm", text: c.name, title: c.source }),
+        statusBadge(c.diag.level, c.diag.title),
+        h("div", { class: "muted", style: "font-size:12px;margin-top:4px", text:
+          `защита ${fmt(c.diag.have_s)} с · нужно ${fmt(c.diag.need_s)} с · фризов ${c.stats.Freezes}` + (c.idle_s > 15 ? " · не смотрят" : "") })));
+    }
   }
+  list.append(h("div", { class: "side-h" }, h("span", { text: "История сеансов" }), h("span", { class: "muted", text: state.sessions.length ? String(state.sessions.length) : "" })));
+  if (!state.sessions.length) list.append(h("div", { class: "card muted", style: "font-size:12px", text: "Сохраняются при остановке канала и каждые 5 мин" }));
+  for (const m of state.sessions.slice(0, 40)) {
+    const lv = m.marks ? "serious" : m.level || "info";
+    list.append(h("button", { class: "card sess", "aria-current": String(state.view === "session" && state.sessFile === m.file),
+      onclick: () => openSession(m.file) },
+      h("div", { class: "nm", text: m.name }),
+      h("div", { class: "muted", style: "font-size:12px", text: `${m.start} – ${m.end.slice(11)}${m.live ? " (идёт)" : ""} · ${fmt(m.minutes)} мин` }),
+      h("div", { style: "font-size:12px;margin-top:2px" }, statusBadge(lv, `фризов ${m.freezes} · отметок ${m.marks} · дефектов ${m.defects}`))));
+  }
+}
+
+async function openSession(file) {
+  state.view = "session"; state.sessFile = file; renderList();
+  $("#detail").classList.add("stale");
+  const r = await fetch("api/sessions/" + encodeURIComponent(file), { cache: "no-store" });
+  if (r.ok) { state.detail = await r.json(); state.detail.__file = file; renderDetail(); }
+}
+
+async function sendMark(ago, out) {
+  const d = state.detail;
+  out.replaceChildren(h("span", { class: "muted", text: "Разбираю…" }));
+  try {
+    const r = await fetch("api/channel/" + d.id + "/mark", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ago }) });
+    const m = await r.json();
+    out.replaceChildren(markView(m));
+  } catch (e) { out.replaceChildren(h("span", { text: "Ошибка: " + e })); }
+}
+
+function markView(m) {
+  const ul = h("ul", { class: "reasons" }); for (const c of m.causes || []) ul.append(h("li", { text: c }));
+  return h("div", { class: "mk" }, h("div", {}, h("span", { class: "muted", text: m.at + "  " }), statusBadge(m.level, m.summary)), ul);
 }
 
 function renderDetail() {
   const d = state.detail, root = $("#detail");
   if (!d) return;
+  const live = state.view === "live";
   const g = d.diag, [ic, cls] = LV[g.level] || LV.info;
   root.classList.remove("stale");
   root.replaceChildren();
+
+  if (!live) {
+    root.append(h("div", { class: "banner" }, "Сохранённый сеанс: ", h("b", { text: d.name }), ` · начало ${new Date(d.t0_unix * 1000).toLocaleString("ru-RU")}` +
+      (d.live ? " · канал ещё идёт, снимок раз в 5 мин" : "") + " · ",
+      h("a", { href: "api/sessions/" + encodeURIComponent(d.__file) + "?download=1", text: "скачать JSON" })));
+  } else {
+    const out = h("div", { class: "marks" });
+    root.append(h("div", { class: "card" },
+      h("h2", { text: "Был фриз? Отметьте — прокси разберёт, что происходило в этот момент" }),
+      h("div", { class: "btnrow" },
+        ...[["только что", 3], ["15 с назад", 15], ["30 с назад", 30], ["1 мин назад", 60]].map(([t, ago]) =>
+          h("button", { class: "btn" + (ago === 3 ? " primary" : ""), text: t, onclick: () => sendMark(ago, out) }))), out));
+  }
 
   // verdict
   const v = h("div", { class: "card" },
     h("div", { class: "muted", text: d.name + " · " + d.source }),
     h("div", { class: "verdict-title status " + cls }, h("i", { text: ic, "aria-hidden": "true" }), h("span", { text: g.title })));
   const ul = h("ul", { class: "reasons" }); for (const r of g.reasons || []) ul.append(h("li", { text: r })); v.append(ul);
-  const m = h("div", { class: "meter" }); v.append(h("div", { style: "margin-top:10px" }, h("div", { class: "sec", style: "font-size:12px", text: "Защита от провалов, секунд" }), m));
-  // recommendation & apply
-  if (g.verdict !== "learning") {
+  const m = h("div", { class: "meter" }); v.append(h("div", { style: "margin-top:10px" }, h("div", { class: "sec", style: "font-size:12px", text: "Защита от провалов провайдера, секунд" }), m));
+  if (live && g.verdict !== "learning") {
     const inD = h("input", { class: "num", type: "number", min: "0", max: String(g.max_s), value: String(Math.max(g.rec_delay, 0)) });
     const inC = h("input", { class: "num", type: "number", min: "1", max: "6", value: String(g.rec_conc) });
     const msg = h("span", { class: "muted" });
@@ -408,44 +480,62 @@ function renderDetail() {
   root.append(v);
   meter(m, d);
 
+  // other causes
+  if ((g.other || []).length) {
+    const oc = h("div", { class: "card" }, h("h2", { text: "Другие причины фризов (не связанные с запасом)" }));
+    for (const c of g.other) oc.append(h("div", { style: "margin:6px 0" }, statusBadge(c.level, c.text)));
+    root.append(oc);
+  }
+  // marks
+  if ((d.marks || []).length) {
+    const mc = h("div", { class: "card marks" }, h("h2", { text: "Отметки фризов" }));
+    for (const mk of [...d.marks].reverse()) mc.append(markView(mk));
+    root.append(mc);
+  }
+
   // tiles
   const sx = d.stats;
-  const tiles = h("div", { class: "tiles" },
+  root.append(h("div", { class: "tiles" },
     tile("Отставание плеера от эфира", "≈" + fmt(d.delay_s + d.client_buf_s) + " с", "в RAM роутера " + fmt(d.delay_s) + " с, у плеера ≈" + fmt(d.client_buf_s) + " с"),
     tile("Скачанный запас", fmt(d.ready_ahead_s) + " с", d.holding ? "идёт пауза-добор" : d.stall ? "край ждёт сегмент" : "впереди края плеера"),
     tile("Буфер плеера (оценка)", fmt(d.client_buf_s) + " с", d.idle_s > 15 ? "плеер не запрашивает" : d.client_playing ? "играет" : "буферизация"),
     tile("Ёмкость канала", g.cap_x < 0 ? "с запасом" : "×" + fmt(g.cap_x, 2), "загрузчик занят " + fmt(g.busy_pct) + "% времени"),
+    tile("Доставка до ТВ", g.lan_mbps ? fmt(g.lan_mbps) + " Мбит/с" : "—", g.lan_min_x > 0 ? "худший сегмент ×" + fmt(g.lan_min_x, 1) : "нет данных"),
     tile("Битрейт потока", fmt(g.bitrate_mbps, 1) + " Мбит/с", "сегмент " + fmt(d.seg_dur_s, 1) + " с, потоков " + d.concurrency),
+    tile("Дефекты потока", String(sx.Defects), "CC/дыры/скачки, за 10 мин: " + g.defects),
     tile("Фризов у плеера", String(sx.Freezes), "оценка, всего " + fmt(sx.FreezeS) + " с"),
     tile("Пауз-добора", String(sx.Holds), fmt(sx.HoldS) + " с суммарно"),
-    tile("Потеряно сегментов", String(sx.Skipped + sx.Gaps), "ретраев " + sx.Retries));
-  root.append(tiles);
+    tile("Потеряно сегментов", String(sx.Skipped + sx.Gaps), "ретраев " + sx.Retries),
+    tile("Плеер", String(sx.ClAborted + sx.ClientRest), `обрывов ${sx.ClAborted}, перезапусков ${sx.ClientRest}, пауз опроса ${sx.PollGaps}`)));
 
   const c1 = h("div", { class: "chart" }), c2 = h("div", { class: "chart" }), c3 = h("div", { class: "chart" });
   root.append(h("div", { class: "card" }, h("h2", { text: "Запас и потребность" }), c1));
   root.append(h("div", { class: "grid2" },
     h("div", { class: "card" }, h("h2", { text: "Опоздание сегментов относительно лучшего случая" }), c2),
-    h("div", { class: "card" }, h("h2", { text: "Скорость скачивания сегментов, × реального времени" }), c3)));
+    h("div", { class: "card" }, h("h2", { text: "Скорость передачи сегментов, × реального времени" }), c3)));
   reserveChart(c1, d); latenessChart(c2, d); speedChart(c3, d);
 
   // events
   const evs = h("div", { class: "events" });
-  const ek = { info: "info", warn: "warning", crit: "critical", tune: "good" };
   for (const e of [...d.events].reverse()) {
-    const [ic2, cls2] = LV[ek[e.kind]] || LV.info;
+    const [ic2, cls2] = LV[EK[e.kind]] || LV.info;
     evs.append(h("div", { class: "ev" }, h("span", { class: "tm", text: e.at }),
-      h("span", { class: "status " + cls2 }, h("i", { text: e.kind === "tune" ? "⚙" : ic2, title: e.kind })), h("span", { text: e.text })));
+      h("span", { class: "status " + cls2 }, h("i", { text: e.kind === "tune" ? "⚙" : e.kind === "mark" ? "⚑" : ic2, title: e.kind })), h("span", { text: e.text })));
   }
   root.append(h("div", { class: "card" }, h("h2", { text: "События" }), evs));
 
   // table view
+  const lanBy = {}; for (const r of d.client || []) if (!r.aborted) lanBy[r.id] = r;
   const tb = h("table", { class: "data" });
-  tb.append(h("tr", {}, ...["Время", "Сегм.", "Длит., с", "МБ", "Мбит/с", "× реалтайм", "Опоздание, с", "Попыток", ""].map(t => h("th", { text: t }))));
-  const live = d.segments.filter(r => !r.init && !r.failed);
-  const qmin = live.length ? Math.min(...live.map(r => r.q)) : 0;
-  for (const r of d.segments.slice(-60).reverse()) {
+  tb.append(h("tr", {}, ...["Время", "Сегм.", "Длит., с", "МБ", "Мбит/с", "× провайдер", "× до ТВ", "Опоздание, с", "Попыток", "Поток", ""].map(t => h("th", { text: t }))));
+  const lv = d.segments.filter(r => !r.init && !r.failed);
+  const qmin = lv.length ? Math.min(...lv.map(r => r.q)) : 0;
+  for (const r of d.segments.slice(-80).reverse()) {
+    const ln = lanBy[r.id];
+    const defect = r.bad ? [r.cc ? "CC " + r.cc : "", r.ts_gap ? "дыра " + fmt(r.ts_gap, 2) : "", r.ts_short ? "короче " + fmt(r.ts_short, 2) : "", r.ts_jump ? "скачок " + fmt(r.ts_jump, 2) : ""].filter(Boolean).join(", ") : "ок";
     tb.append(h("tr", {}, ...[clock(r.t), r.id >= 0 ? r.id : "—", fmt(r.dur, 1), fmt(r.kb / 1024, 1), fmt(r.mbps, 1), r.failed ? "—" : fmt(r.x, 2),
-      r.failed || r.init ? "—" : fmt(r.q - qmin, 1), r.tries || "—", r.failed ? (r.gap ? "потерян у провайдера" : "не скачан") : r.init ? "стартовое окно" : ""].map(t => h("td", { text: String(t) }))));
+      ln ? fmt(ln.x, 1) : "—", r.failed || r.init ? "—" : fmt(r.q - qmin, 1), r.tries || "—", r.failed ? "—" : defect,
+      r.failed ? (r.gap ? "потерян у провайдера" : "не скачан") : r.init ? "стартовое окно" : ""].map(t => h("td", { text: String(t) }))));
   }
   root.append(h("details", { class: "card" }, h("summary", { text: "Таблица последних сегментов" }), tb));
 }
@@ -458,20 +548,26 @@ async function refresh() {
     $("#ver").textContent = "v" + st.version;
     $("#mode").textContent = MODES[st.mode] || st.mode;
     $("#conn").textContent = "";
+    if (Date.now() - state.sessAt > 10000) {
+      state.sessAt = Date.now();
+      try { state.sessions = await (await fetch("api/sessions", { cache: "no-store" })).json(); } catch (e) {}
+    }
     renderList();
-    if (state.sel) {
-      $("#detail").classList.add("stale");
-      const r = await fetch("api/channel/" + state.sel, { cache: "no-store" });
-      if (r.ok) { state.detail = await r.json(); renderDetail(); }
-    } else {
-      $("#detail").replaceChildren(h("div", { class: "card empty", text: "Нет активных каналов. Включите канал в плеере — он появится здесь." }));
+    if (state.view === "live") {
+      if (state.sel) {
+        $("#detail").classList.add("stale");
+        const r = await fetch("api/channel/" + state.sel, { cache: "no-store" });
+        if (r.ok) { state.detail = await r.json(); renderDetail(); }
+      } else {
+        $("#detail").replaceChildren(h("div", { class: "card empty", text: "Нет активных каналов. Включите канал в плеере или откройте сеанс из истории слева." }));
+      }
     }
   } catch (e) {
     $("#conn").textContent = "нет связи с прокси";
   } finally { state.busy = false; }
 }
 let hovering = false;
-document.addEventListener("pointerover", e => { hovering = !!e.target.closest("svg"); });
+document.addEventListener("pointerover", e => { hovering = !!e.target.closest("svg") || !!e.target.closest(".marks"); });
 setInterval(() => { if (!hovering) refresh(); }, 2000);
 window.addEventListener("resize", () => state.detail && renderDetail());
 refresh();

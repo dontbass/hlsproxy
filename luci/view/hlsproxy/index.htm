@@ -13,6 +13,8 @@ if http.formvalue("hp_save") then
 	local m = http.formvalue("mode")
 	if m == "auto" or m == "advise" or m == "off" then uci:set("hlsproxy", "main", "mode", m) end
 	uci:set("hlsproxy", "main", "all_variants", http.formvalue("all_variants") and "1" or "0")
+	local ld = http.formvalue("log_dir")
+	if ld and (ld == "" or ld:match("^/[%w%._%-/]+$")) then uci:set("hlsproxy", "main", "log_dir", ld) end
 	uci:commit("hlsproxy")
 	sys.call("/etc/init.d/hlsproxy restart >/dev/null 2>&1")
 	saved = true
@@ -76,6 +78,9 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 	<div class="cbi-value"><label class="cbi-value-title">Все качества</label>
 		<div class="cbi-value-field"><input type="checkbox" name="all_variants" value="1" <%=(get('all_variants','0')=='1') and 'checked' or ''%>>
 		<div class="cbi-value-description">Выключено — из master-плейлиста остаётся только лучшее качество.</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Каталог журнала</label>
+		<div class="cbi-value-field"><input type="text" name="log_dir" value="<%=get('log_dir','/tmp/hlsproxy-log')%>" class="cbi-input-text">
+		<div class="cbi-value-description">Журнал событий и история сеансов (до 60 сеансов, ~0,5 МБ каждый). /tmp — RAM, очищается при перезагрузке; для хранения укажите USB. Пусто — выключить.</div></div></div>
 	<div class="cbi-value"><label class="cbi-value-title"></label>
 		<div class="cbi-value-field"><input type="submit" name="hp_save" class="cbi-button cbi-button-save" value="Сохранить и перезапустить"></div></div>
 </fieldset></div>

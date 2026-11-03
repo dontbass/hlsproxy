@@ -126,21 +126,27 @@ func apiChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		c.mu.Lock()
-		recs := c.recs
-		if len(recs) > 400 {
-			recs = recs[len(recs)-400:]
-		}
-		out := struct {
-			chanSummary
-			NowT    float64  `json:"now_t"`
-			Samples []sample `json:"samples"`
-			Recs    []segRec `json:"segments"`
-			Events  []event  `json:"events"`
-			Profile *profile `json:"profile"`
-		}{c.summary(), round1(c.rel(time.Now())), append([]sample(nil), c.samples...),
-			append([]segRec(nil), recs...), append([]event(nil), c.events...), profiles.get(id)}
+		out := c.detail(false)
 		c.mu.Unlock()
 		writeJSON(w, out)
+
+	case "mark":
+		if r.Method != http.MethodPost || c == nil {
+			http.Error(w, "POST to a live channel", http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			Ago float64 `json:"ago"`
+		}
+		json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req)
+		c.mu.Lock()
+		t := c.rel(time.Now()) - math.Max(0, math.Min(req.Ago, 600))
+		m := c.explainAt(t)
+		c.marks = append(c.marks, m)
+		c.addEvent("mark", "отметка «был фриз» в "+m.At+": "+m.Summary+". "+strings.Join(m.Causes, " "))
+		c.saveSession(false)
+		c.mu.Unlock()
+		writeJSON(w, m)
 
 	case "apply":
 		if r.Method != http.MethodPost {
@@ -203,6 +209,41 @@ func apiChannel(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+type detailOut struct {
+	chanSummary
+	T0Unix  float64  `json:"t0_unix"`
+	NowT    float64  `json:"now_t"`
+	Live    bool     `json:"live"`
+	Samples []sample `json:"samples"`
+	Recs    []segRec `json:"segments"`
+	Client  []clRec  `json:"client"`
+	Events  []event  `json:"events"`
+	Marks   []mark   `json:"marks"`
+	Profile *profile `json:"profile"`
+}
+
+// detail: caller holds c.mu. full=false trims history for the live panel.
+func (c *channel) detail(full bool) detailOut {
+	recs, cl, sm := c.recs, c.cl, c.samples
+	if !full {
+		if len(sm) > 900 {
+			sm = sm[len(sm)-900:]
+		}
+		if len(recs) > 400 {
+			recs = recs[len(recs)-400:]
+		}
+		if len(cl) > 400 {
+			cl = cl[len(cl)-400:]
+		}
+	}
+	return detailOut{
+		chanSummary: c.summary(), T0Unix: float64(c.t0.UnixMilli()) / 1000, NowT: round1(c.rel(time.Now())), Live: true,
+		Samples: append([]sample(nil), sm...), Recs: append([]segRec(nil), recs...),
+		Client: append([]clRec(nil), cl...), Events: append([]event(nil), c.events...),
+		Marks: append([]mark(nil), c.marks...), Profile: profiles.get(c.id),
 	}
 }
 

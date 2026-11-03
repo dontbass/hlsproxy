@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-var version = "3.0.0"
+var version = "3.1.0"
 
 type config struct {
 	Listen       string
@@ -34,6 +35,7 @@ type config struct {
 	Mode         string // auto | advise | off
 	ProfilePath  string
 	MaxHold      time.Duration // max single auto-pause
+	LogDir       string
 }
 
 var cfg config
@@ -57,6 +59,7 @@ func main() {
 	flag.IntVar(&startWait, "start-wait", 7, "держать первый запрос плеера до N сек")
 	flag.IntVar(&maxHold, "max-pause", 40, "макс. длительность одной авто-паузы, сек (0 = не делать)")
 	flag.BoolVar(&cfg.AllVariants, "all-variants", false, "оставлять все качества в master-плейлисте")
+	flag.StringVar(&cfg.LogDir, "log-dir", "/tmp/hlsproxy-log", "журнал и история сеансов (пусто = выкл.)")
 	flag.StringVar(&cfg.UA, "ua", "", "User-Agent к провайдеру (по умолчанию — как у плеера)")
 	showVer := flag.Bool("version", false, "версия")
 	flag.Parse()
@@ -78,6 +81,8 @@ func main() {
 		log.Fatal(err)
 	}
 	profiles.load(cfg.ProfilePath)
+	logs.init(cfg.LogDir)
+	logs.write(time.Now().Format("2006-01-02 15:04:05") + "  info  [hlsproxy] запуск " + version + ", mode=" + cfg.Mode + "\n")
 	go channels.janitor()
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: newMux(), ReadHeaderTimeout: 10 * time.Second}
@@ -108,6 +113,9 @@ func newMux() *http.ServeMux {
 	mux.HandleFunc("/api/status", apiStatus)
 	mux.HandleFunc("/api/channel/", apiChannel)
 	mux.HandleFunc("/api/profiles", apiProfiles)
+	mux.HandleFunc("/api/sessions", apiSessions)
+	mux.HandleFunc("/api/sessions/", apiSessions)
+	mux.HandleFunc("/api/log", apiLog)
 	mux.HandleFunc("/ui", uiHandler)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -187,6 +195,7 @@ func serveChannel(c *channel, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.mu.Lock()
+	c.notePoll(time.Now())
 	c.advance(time.Now())
 	body := c.render(r.Host)
 	c.mu.Unlock()
@@ -285,25 +294,66 @@ func segHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.Header().Set("Cache-Control", "max-age=300")
-	if until, on := c.holdUntilTime(); on && r.Method == http.MethodGet && r.Header.Get("Range") == "" {
-		trickle(w, r, f, st.Size(), until)
+	cw := &countingWriter{ResponseWriter: w}
+	t0 := time.Now()
+	held := 0.0
+	full := r.Header.Get("Range") == ""
+	if until, on := c.holdUntilTime(); on && r.Method == http.MethodGet && full {
+		held = trickle(cw, r, f, st.Size(), until)
+	} else {
+		http.ServeContent(cw, r, "", st.ModTime(), f)
+	}
+	if r.Method != http.MethodGet {
 		return
 	}
-	http.ServeContent(w, r, "", st.ModTime(), f)
+	sec := time.Since(t0).Seconds() - held
+	rec := clRec{ID: id, KB: cw.n / 1024, Sec: round2(sec), Held: round1(held),
+		Aborted: r.Context().Err() != nil || full && cw.n < st.Size()}
+	c.mu.Lock()
+	rec.T = round1(c.rel(time.Now()))
+	sec = math.Max(sec, 0.001)
+	rec.Sec = round2(sec)
+	rec.X = round2(math.Min(s.dur/sec, 99))
+	rec.Mbps = round1(math.Min(float64(cw.n)*8/1e6/sec, 9999))
+	if rec.Aborted {
+		c.stats.ClAborted++
+		c.addEvent("warn", fmt.Sprintf("плеер оборвал загрузку сегм. %d на %d из %d КБ (таймаут/переключение/ошибка у плеера)", id, cw.n/1024, st.Size()/1024))
+	}
+	c.addCl(rec)
+	c.mu.Unlock()
+}
+
+type countingWriter struct {
+	http.ResponseWriter
+	n int64
+}
+
+func (cw *countingWriter) Write(b []byte) (int, error) {
+	n, err := cw.ResponseWriter.Write(b)
+	cw.n += int64(n)
+	return n, err
+}
+
+func (cw *countingWriter) Flush() {
+	if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // trickle: during an auto-pause send the segment one TS packet every 3 s (keeps
 // the player's read timeout happy, gives it no playable media), then the rest.
-func trickle(w http.ResponseWriter, r *http.Request, f *os.File, size int64, until time.Time) {
+// Returns how long the response was held back.
+func trickle(w http.ResponseWriter, r *http.Request, f *os.File, size int64, until time.Time) float64 {
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
 	pkt := make([]byte, 188)
+	t0 := time.Now()
 	for {
 		n, _ := f.Read(pkt)
 		if n > 0 {
 			if _, err := w.Write(pkt[:n]); err != nil {
-				return
+				return time.Since(t0).Seconds()
 			}
 			if fl != nil {
 				fl.Flush()
@@ -316,10 +366,12 @@ func trickle(w http.ResponseWriter, r *http.Request, f *os.File, size int64, unt
 		select {
 		case <-time.After(min(left, 3*time.Second)):
 		case <-r.Context().Done():
-			return
+			return time.Since(t0).Seconds()
 		}
 	}
+	held := time.Since(t0).Seconds()
 	io.Copy(w, f)
+	return held
 }
 
 func legacyTSHandler(w http.ResponseWriter, r *http.Request) {
