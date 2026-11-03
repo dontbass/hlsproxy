@@ -5,6 +5,16 @@ local sys = require "luci.sys"
 
 local nums = { "delay", "max_delay", "max_pause", "start_segs", "window", "concurrency" }
 local saved = false
+if http.formvalue("hp_ext") then
+	uci:set("hlsproxy", "main", "wan_access", http.formvalue("wan_access") and "1" or "0")
+	if http.formvalue("hp_newkey") == "1" or (uci:get("hlsproxy", "main", "access_key") or "") == "" then
+		local f = io.open("/proc/sys/kernel/random/uuid")
+		if f then uci:set("hlsproxy", "main", "access_key", (f:read("*l") or ""):gsub("-", "")); f:close() end
+	end
+	uci:commit("hlsproxy")
+	sys.call("/etc/init.d/hlsproxy restart >/dev/null 2>&1")
+	saved = true
+end
 if http.formvalue("hp_save") then
 	for _, k in ipairs(nums) do
 		local v = tonumber(http.formvalue(k) or "")
@@ -22,6 +32,14 @@ end
 
 local function get(k, d) return uci:get("hlsproxy", "main", k) or d end
 local port = get("port", "8888")
+local key = get("access_key", "")
+local wan_on = get("wan_access", "0") == "1"
+local wan_ip = ""
+local okU, util = pcall(require, "luci.util")
+if okU and util.ubus then
+	local st = util.ubus("network.interface.wan", "status", {})
+	if st and st["ipv4-address"] and st["ipv4-address"][1] then wan_ip = st["ipv4-address"][1].address end
+end
 local mode = get("mode", "auto")
 local function sel(v) return (mode == v) and 'selected' or '' end
 -%>
@@ -40,10 +58,33 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 		<div class="cbi-value-field"><input type="button" class="cbi-button cbi-button-apply" value="Сгенерировать" onclick="hpGen()"></div>
 	</div>
 	<div class="cbi-value">
-		<label class="cbi-value-title">Для OTT Navigator</label>
+		<label class="cbi-value-title">Для ТВ дома</label>
 		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="out_url" style="width:100%" readonly onclick="this.select()"></div>
 	</div>
+	<div class="cbi-value">
+		<label class="cbi-value-title">Для ТВ извне</label>
+		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="out_ext" style="width:100%" readonly onclick="this.select()">
+		<div class="cbi-value-description" id="ext_note"></div></div>
+	</div>
 </fieldset></div>
+
+<form method="post" action="<%=REQUEST_URI%>">
+<input type="hidden" name="token" value="<%=token%>">
+<input type="hidden" name="hp_ext" value="1">
+<div class="cbi-section"><h3>Доступ извне (ТВ в другом месте)</h3><fieldset class="cbi-section-node">
+	<div class="cbi-map-descr">Плеер в другом городе подключается к белому IP роутера. Без ключа внешние запросы отклоняются; прокси не пускает внешних клиентов во внутреннюю сеть. Поток идёт через ваш исходящий канал: для UHD нужно ≥ 25–30 Мбит/с отдачи на каждый внешний ТВ. Надёжнее — WireGuard-туннель между роутерами: тогда порт открывать не нужно.</div>
+	<div class="cbi-value"><label class="cbi-value-title">Открыть порт <%=port%> на WAN</label>
+		<div class="cbi-value-field"><input type="checkbox" name="wan_access" value="1" <%=wan_on and 'checked' or ''%>>
+		<div class="cbi-value-description">Создаёт правило файрвола «Allow-HLSProxy» (tcp/<%=port%> из wan).</div></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Ключ доступа</label>
+		<div class="cbi-value-field"><code id="hp_key"><%=pcdata(key ~= "" and key or "— будет создан при сохранении —")%></code>
+		<label style="margin-left:12px"><input type="checkbox" name="hp_newkey" value="1"> выпустить новый (старые ссылки перестанут работать)</label></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Адрес снаружи</label>
+		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="ext_host" value="<%=pcdata(wan_ip)%><%= wan_ip ~= '' and (':' .. port) or '' %>" placeholder="белый-ip:<%=port%> или домен:<%=port%>"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"></label>
+		<div class="cbi-value-field"><input type="submit" class="cbi-button cbi-button-save" value="Сохранить доступ"></div></div>
+</fieldset></div>
+</form>
 
 <div class="cbi-section"><h3>Панель каналов</h3>
 	<div class="cbi-value-description" style="margin-bottom:6px">Открыть отдельно: <a id="ui_link" target="_blank" rel="noopener"></a></div>
@@ -92,7 +133,13 @@ document.getElementById('hp_ui').src = HP_BASE + "/ui";
 var a = document.getElementById('ui_link'); a.href = HP_BASE + "/ui"; a.textContent = HP_BASE + "/ui";
 function hpGen() {
 	var v = document.getElementById('prov_url').value.trim();
-	if (v) document.getElementById('out_url').value = HP_BASE + "/playlist?url=" + encodeURIComponent(v);
+	if (!v) return;
+	document.getElementById('out_url').value = HP_BASE + "/playlist?url=" + encodeURIComponent(v);
+	var key = "<%=(key:gsub("[^%w]", ""))%>", host = document.getElementById('ext_host').value.trim();
+	var note = document.getElementById('ext_note');
+	if (!key || !host) { document.getElementById('out_ext').value = ""; note.textContent = "Сначала включите доступ извне и сохраните (появятся ключ и адрес)."; return; }
+	document.getElementById('out_ext').value = "http://" + host + "/k/" + key + "/playlist?url=" + encodeURIComponent(v);
+	note.textContent = <%= wan_on and '""' or '"Порт на WAN ещё закрыт — включите «Открыть порт» выше."' %>;
 }
 </script>
 <%+footer%>

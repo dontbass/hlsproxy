@@ -22,7 +22,7 @@ dl init.d/hlsproxy /etc/init.d/hlsproxy
 chmod +x /etc/init.d/hlsproxy
 if [ -f /etc/config/hlsproxy ]; then
 	# добавить новые опции, не трогая уже заданные
-	for kv in mode=auto max_delay=180 max_pause=40 log_dir=/tmp/hlsproxy-log; do
+	for kv in mode=auto max_delay=180 max_pause=40 log_dir=/tmp/hlsproxy-log wan_access=0; do
 		k=${kv%%=*}; v=${kv#*=}
 		[ -n "$(uci -q get hlsproxy.main.$k)" ] || uci set hlsproxy.main.$k="$v"
 	done
@@ -31,6 +31,10 @@ else
 	dl files/hlsproxy.config /etc/config/hlsproxy
 fi
 mkdir -p /etc/hlsproxy
+if [ -z "$(uci -q get hlsproxy.main.access_key)" ]; then
+	uci set hlsproxy.main.access_key="$(tr -d '-' < /proc/sys/kernel/random/uuid)"
+	uci commit hlsproxy
+fi
 
 mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/view/hlsproxy
 dl luci/controller/hlsproxy.lua /usr/lib/lua/luci/controller/hlsproxy.lua

@@ -4,9 +4,33 @@ STOP=10
 USE_PROCD=1
 PROG=/usr/bin/hlsproxy
 
+# Правило файрвола для доступа извне: создаётся при wan_access=1 и заданном ключе.
+sync_firewall() {
+	local want port key cur
+	want=$(uci -q get hlsproxy.main.wan_access)
+	port=$(uci -q get hlsproxy.main.port); port=${port:-8888}
+	key=$(uci -q get hlsproxy.main.access_key)
+	cur="$(uci -q get firewall.hlsproxy)/$(uci -q get firewall.hlsproxy.dest_port)"
+	if [ "$want" = "1" ] && [ -n "$key" ]; then
+		[ "$cur" = "rule/$port" ] && return 0
+		uci -q delete firewall.hlsproxy
+		uci set firewall.hlsproxy=rule
+		uci set firewall.hlsproxy.name='Allow-HLSProxy'
+		uci set firewall.hlsproxy.src='wan'
+		uci set firewall.hlsproxy.proto='tcp'
+		uci set firewall.hlsproxy.dest_port="$port"
+		uci set firewall.hlsproxy.target='ACCEPT'
+	else
+		[ "$cur" = "/" ] && return 0
+		uci -q delete firewall.hlsproxy
+	fi
+	uci commit firewall
+	/etc/init.d/firewall reload >/dev/null 2>&1
+}
+
 start_service() {
 	config_load hlsproxy
-	local enabled port mode delay max_delay max_pause start_segs window concurrency all_variants ua log_dir
+	local enabled port mode delay max_delay max_pause start_segs window concurrency all_variants ua log_dir access_key
 	config_get_bool enabled main enabled 1
 	[ "$enabled" = "1" ] || return 0
 	config_get port main port 8888
@@ -20,6 +44,8 @@ start_service() {
 	config_get_bool all_variants main all_variants 0
 	config_get ua main ua ""
 	config_get log_dir main log_dir /tmp/hlsproxy-log
+	config_get access_key main access_key ""
+	sync_firewall
 
 	mkdir -p /etc/hlsproxy
 	procd_open_instance
@@ -28,6 +54,7 @@ start_service() {
 		-cache /tmp/hls_cache -profiles /etc/hlsproxy/profiles.json -log-dir "$log_dir"
 	[ "$all_variants" = "1" ] && procd_append_param command -all-variants
 	[ -n "$ua" ] && procd_append_param command -ua "$ua"
+	[ -n "$access_key" ] && procd_append_param command -access-key "$access_key"
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param respawn 3600 5 0

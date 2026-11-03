@@ -1130,7 +1130,7 @@ func (c *channel) noteClientSeg(id int64) {
 	c.clLastSegT = now
 }
 
-func (c *channel) render(host string) string {
+func (c *channel) render(base string) string {
 	var b strings.Builder
 	v := max(c.version, 3)
 	td := int(math.Ceil(c.targetDur))
@@ -1159,7 +1159,7 @@ func (c *channel) render(host string) string {
 			b.WriteString(s.mapLine + "\n")
 		}
 		prevKey, prevMap = s.keyLine, s.mapLine
-		fmt.Fprintf(&b, "#EXTINF:%.3f,\nhttp://%s/seg/%s/%d%s\n", s.dur, host, c.id, s.id, s.ext)
+		fmt.Fprintf(&b, "#EXTINF:%.3f,\n%s/seg/%s/%d%s\n", s.dur, base, c.id, s.id, s.ext)
 	}
 	return b.String()
 }

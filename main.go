@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var version = "3.1.0"
+var version = "3.2.0"
 
 type config struct {
 	Listen       string
@@ -36,6 +36,7 @@ type config struct {
 	ProfilePath  string
 	MaxHold      time.Duration // max single auto-pause
 	LogDir       string
+	AccessKey    string
 }
 
 var cfg config
@@ -59,6 +60,7 @@ func main() {
 	flag.IntVar(&startWait, "start-wait", 7, "держать первый запрос плеера до N сек")
 	flag.IntVar(&maxHold, "max-pause", 40, "макс. длительность одной авто-паузы, сек (0 = не делать)")
 	flag.BoolVar(&cfg.AllVariants, "all-variants", false, "оставлять все качества в master-плейлисте")
+	flag.StringVar(&cfg.AccessKey, "access-key", "", "ключ для доступа извне: http://<IP>:порт/k/<ключ>/... (пусто = извне запрещено)")
 	flag.StringVar(&cfg.LogDir, "log-dir", "/tmp/hlsproxy-log", "журнал и история сеансов (пусто = выкл.)")
 	flag.StringVar(&cfg.UA, "ua", "", "User-Agent к провайдеру (по умолчанию — как у плеера)")
 	showVer := flag.Bool("version", false, "версия")
@@ -86,6 +88,9 @@ func main() {
 	go channels.janitor()
 
 	srv := &http.Server{Addr: cfg.Listen, Handler: newMux(), ReadHeaderTimeout: 10 * time.Second}
+	if cfg.AccessKey != "" && len(cfg.AccessKey) < 12 {
+		log.Printf("ВНИМАНИЕ: access_key короче 12 символов")
+	}
 	log.Printf("hlsproxy %s на %s: mode=%s delay=%s max-delay=%s concurrency=%d",
 		version, cfg.Listen, cfg.Mode, cfg.Delay, cfg.MaxDelay, cfg.Concurrency)
 	log.Fatal(srv.ListenAndServe())
@@ -103,7 +108,7 @@ func normalizeConfig() {
 	}
 }
 
-func newMux() *http.ServeMux {
+func newMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/playlist", playlistHandler)
 	mux.HandleFunc("/proxy", playlistHandler)
@@ -122,9 +127,9 @@ func newMux() *http.ServeMux {
 			http.NotFound(w, r)
 			return
 		}
-		http.Redirect(w, r, "/ui", http.StatusFound)
+		http.Redirect(w, r, baseURL(r)+"/ui", http.StatusFound)
 	})
-	return mux
+	return withAccess(mux)
 }
 
 func clientUA(r *http.Request) string {
@@ -144,6 +149,10 @@ func playlistHandler(w http.ResponseWriter, r *http.Request) {
 		serveChannel(c, w, r)
 		return
 	}
+	if ok, why := upstreamAllowed(r, src); !ok {
+		denied(w, r, why)
+		return
+	}
 
 	ua := clientUA(r)
 	body, final, err := fetchPlaylist(r.Context(), src, ua)
@@ -154,7 +163,8 @@ func playlistHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	base, _ := url.Parse(final)
 	wrap := func(u string) string {
-		return "http://" + r.Host + "/proxy?url=" + url.QueryEscape(u)
+		learnHost(u)
+		return baseURL(r) + "/proxy?url=" + url.QueryEscape(u)
 	}
 
 	switch detectKind(body) {
@@ -197,7 +207,7 @@ func serveChannel(c *channel, w http.ResponseWriter, r *http.Request) {
 	c.mu.Lock()
 	c.notePoll(time.Now())
 	c.advance(time.Now())
-	body := c.render(r.Host)
+	body := c.render(baseURL(r))
 	c.mu.Unlock()
 	writeM3U(w, body)
 }
@@ -378,6 +388,10 @@ func legacyTSHandler(w http.ResponseWriter, r *http.Request) {
 	u := r.URL.Query().Get("url")
 	if u == "" {
 		http.Error(w, "url= required", http.StatusBadRequest)
+		return
+	}
+	if isExternal(r) {
+		denied(w, r, "/ts недоступен извне")
 		return
 	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
