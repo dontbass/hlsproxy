@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -110,6 +111,24 @@ func TestAccess(t *testing.T) {
 	h.ServeHTTP(rw, r)
 	if rw.Code != 404 {
 		t.Fatalf("private source on public local addr must need key: %d", rw.Code)
+	}
+	// saved playlists: /pl/<id> from UCI, short links, works for LAN and key clients
+	uciPath := t.TempDir() + "/hlsproxy"
+	os.WriteFile(uciPath, []byte("config hlsproxy 'main'\n\toption port '8888'\n\nconfig playlist 'pl_a1b2c3'\n\toption name 'Дом'\n\toption url '"+up.URL+"/list.m3u'\n"), 0644)
+	saved.Lock()
+	saved.path, saved.checked = uciPath, time.Time{}
+	saved.Unlock()
+	if w := do(lan, "/pl/a1b2c3"); w.Code != 200 || !strings.Contains(w.Body.String(), "/proxy?url=") {
+		t.Fatalf("saved playlist lan: %d %s", w.Code, w.Body.String())
+	}
+	if w := do(ext, "/k/s3cretKey12345/pl/a1b2c3"); w.Code != 200 || !strings.Contains(w.Body.String(), "/k/s3cretKey12345/proxy?url=") {
+		t.Fatalf("saved playlist external: %d %s", w.Code, w.Body.String())
+	}
+	if c := do(ext, "/pl/a1b2c3").Code; c != 404 {
+		t.Fatalf("saved playlist external without key: %d", c)
+	}
+	if c := do(lan, "/pl/nope").Code; c != 404 {
+		t.Fatalf("unknown saved id: %d", c)
 	}
 	for _, c := range channels.list() {
 		channels.remove(c)

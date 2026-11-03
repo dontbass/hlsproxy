@@ -5,6 +5,35 @@ local sys = require "luci.sys"
 
 local nums = { "delay", "max_delay", "max_pause", "start_segs", "window", "concurrency" }
 local saved = false
+local pl_msg = nil
+if http.formvalue("pl_add") then
+	local name = (http.formvalue("pl_name") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	local purl = (http.formvalue("pl_url") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if not purl:match("^https?://[%w%.%-%[%]:]+") then
+		pl_msg = "Нужна ссылка вида http(s)://…"
+	else
+		local f = io.open("/proc/sys/kernel/random/uuid")
+		local id = f and (f:read("*l") or ""):gsub("-", ""):sub(1, 8) or tostring(os.time())
+		if f then f:close() end
+		if name == "" then name = purl:match("^https?://([^/:]+)") or "плейлист" end
+		uci:set("hlsproxy", "pl_" .. id, "playlist")
+		uci:set("hlsproxy", "pl_" .. id, "name", name)
+		uci:set("hlsproxy", "pl_" .. id, "url", purl)
+		uci:commit("hlsproxy")
+		pl_msg = "Сохранено: " .. name
+	end
+end
+local del = http.formvalue("pl_del")
+if del and del:match("^%x+$") then
+	uci:delete("hlsproxy", "pl_" .. del)
+	uci:commit("hlsproxy")
+	pl_msg = "Удалено"
+end
+local playlists = {}
+uci:foreach("hlsproxy", "playlist", function(sec)
+	local id = (sec[".name"] or ""):gsub("^pl_", "")
+	if id:match("^%x+$") and sec.url then playlists[#playlists + 1] = { id = id, name = sec.name or id, url = sec.url } end
+end)
 if http.formvalue("hp_ext") then
 	uci:set("hlsproxy", "main", "wan_access", http.formvalue("wan_access") and "1" or "0")
 	uci:set("hlsproxy", "main", "ext_ui", http.formvalue("ext_ui") and "1" or "0")
@@ -49,25 +78,36 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 <div class="cbi-map-descr">Кэширующий прокси с отложенным эфиром. Сегменты заранее скачиваются в RAM роутера, плееру отдаётся эфир с отставанием, которое гасит провалы провайдера. Подробная статистика и рекомендации по каждому каналу — на панели ниже.</div>
 <% if saved then %><div class="alert-message success">Сохранено, служба перезапущена.</div><% end %>
 
-<div class="cbi-section"><h3>Ссылка для плеера</h3><fieldset class="cbi-section-node">
-	<div class="cbi-value">
-		<label class="cbi-value-title">Ссылка провайдера</label>
-		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="prov_url" style="width:100%" placeholder="http://…/playlist.m3u или …/index.m3u8"></div>
-	</div>
-	<div class="cbi-value">
-		<label class="cbi-value-title"></label>
-		<div class="cbi-value-field"><input type="button" class="cbi-button cbi-button-apply" value="Сгенерировать" onclick="hpGen()"></div>
-	</div>
-	<div class="cbi-value">
-		<label class="cbi-value-title">Для ТВ дома</label>
-		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="out_url" style="width:100%" readonly onclick="this.select()"></div>
-	</div>
-	<div class="cbi-value">
-		<label class="cbi-value-title">Для ТВ извне</label>
-		<div class="cbi-value-field"><input type="text" class="cbi-input-text" id="out_ext" style="width:100%" readonly onclick="this.select()">
-		<div class="cbi-value-description" id="ext_note"></div></div>
-	</div>
-</fieldset></div>
+<div class="cbi-section"><h3>Плейлисты</h3>
+<div class="cbi-map-descr">Ссылка провайдера хранится на роутере, а в плеер вставляется короткая ссылка. Если провайдер сменит ссылку, поменяйте её здесь — на ТВ ничего перебивать не нужно. Внешние ссылки пересчитываются сами после перевыпуска ключа или смены адреса.</div>
+<% if pl_msg then %><div class="alert-message"><%=pcdata(pl_msg)%></div><% end %>
+<table class="table cbi-section-table">
+	<tr class="tr table-titles"><th class="th">Название</th><th class="th">Для ТВ дома</th><th class="th">Для ТВ извне</th><th class="th"></th></tr>
+	<% if #playlists == 0 then %><tr class="tr"><td class="td" colspan="4"><em>Пока нет сохранённых плейлистов</em></td></tr><% end %>
+	<% for _, p in ipairs(playlists) do %>
+	<tr class="tr">
+		<td class="td"><b><%=pcdata(p.name)%></b><br><small style="word-break:break-all;opacity:.7"><%=pcdata(p.url)%></small></td>
+		<td class="td"><input type="text" class="cbi-input-text hp-lan" data-id="<%=p.id%>" style="width:100%" readonly onclick="this.select()"></td>
+		<td class="td"><input type="text" class="cbi-input-text hp-ext" data-id="<%=p.id%>" style="width:100%" readonly onclick="this.select()"></td>
+		<td class="td"><form method="post" action="<%=REQUEST_URI%>" style="margin:0" onsubmit="return confirm('Удалить плейлист? Ссылки на ТВ перестанут работать.')">
+			<input type="hidden" name="token" value="<%=token%>"><input type="hidden" name="pl_del" value="<%=p.id%>">
+			<input type="submit" class="cbi-button cbi-button-remove" value="Удалить"></form></td>
+	</tr>
+	<% end %>
+</table>
+<form method="post" action="<%=REQUEST_URI%>">
+<input type="hidden" name="token" value="<%=token%>"><input type="hidden" name="pl_add" value="1">
+<fieldset class="cbi-section-node">
+	<div class="cbi-value"><label class="cbi-value-title">Название</label>
+		<div class="cbi-value-field"><input type="text" class="cbi-input-text" name="pl_name" placeholder="Например: Каналы провайдера"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title">Ссылка провайдера</label>
+		<div class="cbi-value-field"><input type="text" class="cbi-input-text" name="pl_url" style="width:100%" placeholder="http://…/playlist.m3u или …/index.m3u8"></div></div>
+	<div class="cbi-value"><label class="cbi-value-title"></label>
+		<div class="cbi-value-field"><input type="submit" class="cbi-button cbi-button-add" value="Сохранить плейлист"></div></div>
+</fieldset>
+</form>
+<div class="cbi-value-description" id="ext_note"></div>
+</div>
 
 <form method="post" action="<%=REQUEST_URI%>">
 <input type="hidden" name="token" value="<%=token%>">
@@ -135,15 +175,19 @@ local function sel(v) return (mode == v) and 'selected' or '' end
 var HP_BASE = "http://" + window.location.hostname + ":<%=port%>";
 document.getElementById('hp_ui').src = HP_BASE + "/ui";
 var a = document.getElementById('ui_link'); a.href = HP_BASE + "/ui"; a.textContent = HP_BASE + "/ui";
-function hpGen() {
-	var v = document.getElementById('prov_url').value.trim();
-	if (!v) return;
-	document.getElementById('out_url').value = HP_BASE + "/playlist?url=" + encodeURIComponent(v);
-	var key = "<%=(key:gsub("[^%w]", ""))%>", host = document.getElementById('ext_host').value.trim();
+var HP_KEY = "<%=(key:gsub("[^%w]", ""))%>", HP_WAN_ON = <%= wan_on and 'true' or 'false' %>;
+function hpLinks() {
+	var host = (document.getElementById('ext_host') || {}).value || "";
+	host = host.trim();
+	document.querySelectorAll('.hp-lan').forEach(function(el) { el.value = HP_BASE + "/pl/" + el.dataset.id; });
+	document.querySelectorAll('.hp-ext').forEach(function(el) {
+		el.value = (HP_KEY && host) ? "http://" + host + "/k/" + HP_KEY + "/pl/" + el.dataset.id : "";
+		el.placeholder = "включите «Доступ извне»";
+	});
 	var note = document.getElementById('ext_note');
-	if (!key || !host) { document.getElementById('out_ext').value = ""; note.textContent = "Сначала включите доступ извне и сохраните (появятся ключ и адрес)."; return; }
-	document.getElementById('out_ext').value = "http://" + host + "/k/" + key + "/playlist?url=" + encodeURIComponent(v);
-	note.textContent = <%= wan_on and '""' or '"Порт на WAN ещё закрыт — включите «Открыть порт» выше."' %>;
+	if (note) note.textContent = !HP_KEY ? "" : HP_WAN_ON ? "" : "Внешние ссылки заработают после включения «Открыть порт на WAN» в разделе «Доступ извне».";
 }
+hpLinks();
+var eh = document.getElementById('ext_host'); if (eh) eh.addEventListener('input', hpLinks);
 </script>
 <%+footer%>

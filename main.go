@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,7 +16,7 @@ import (
 	"time"
 )
 
-var version = "3.2.2"
+var version = "3.3.0"
 
 type config struct {
 	Listen       string
@@ -64,6 +65,7 @@ func main() {
 	flag.IntVar(&maxHold, "max-pause", 40, "макс. длительность одной авто-паузы, сек (0 = не делать)")
 	flag.BoolVar(&cfg.AllVariants, "all-variants", false, "оставлять все качества в master-плейлисте")
 	flag.StringVar(&cfg.AccessKey, "access-key", "", "ключ для доступа извне: http://<IP>:порт/k/<ключ>/... (пусто = извне запрещено)")
+	flag.StringVar(&saved.path, "uci", "/etc/config/hlsproxy", "UCI-файл с сохранёнными плейлистами (config playlist)")
 	flag.BoolVar(&cfg.ExtUI, "ext-ui", false, "разрешить панель и API внешним клиентам с ключом (по умолчанию только просмотр)")
 	flag.IntVar(&cfg.MaxChannels, "max-channels", 6, "макс. одновременных каналов")
 	flag.IntVar(&cfg.MaxExtChans, "max-ext-channels", 2, "из них открытых внешними клиентами")
@@ -119,6 +121,7 @@ func newMux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/playlist", playlistHandler)
 	mux.HandleFunc("/proxy", playlistHandler)
+	mux.HandleFunc("/pl/", savedHandler)
 	mux.HandleFunc("/seg/", segHandler)
 	mux.HandleFunc("/ts", legacyTSHandler)
 	mux.HandleFunc("/status", apiStatus)
@@ -152,9 +155,22 @@ func playlistHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "url= required", http.StatusBadRequest)
 		return
 	}
+	servePlaylist(w, r, src, false)
+}
+
+// servePlaylist: trusted=true for playlists saved by the owner on the router —
+// their hosts are allowed and learned even when an external client opens them.
+func servePlaylist(w http.ResponseWriter, r *http.Request, src string, trusted bool) {
 	if c := channels.get(chanID(src)); c != nil {
 		serveChannel(c, w, r)
 		return
+	}
+	if trusted {
+		if p, err := url.Parse(src); err == nil {
+			if ip := net.ParseIP(p.Hostname()); ip == nil || !routerIP(ip) {
+				learnHost(src)
+			}
+		}
 	}
 	if ok, why := upstreamAllowed(r, src); !ok {
 		denied(w, r, why)
